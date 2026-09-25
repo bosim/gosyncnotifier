@@ -15,7 +15,7 @@ func (r Runner) Run() error {
 	args := r.cmd[1:]
 
 	slog.Debug("Running command", "program", program, "args", args)
-	
+
 	cmd := exec.Command(program, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -24,7 +24,7 @@ func (r Runner) Run() error {
 }
 
 func NewRunner(cmd []string) *Runner {
-	return &Runner {
+	return &Runner{
 		cmd: cmd,
 	}
 }

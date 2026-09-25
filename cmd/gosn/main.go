@@ -2,10 +2,10 @@ package main
 
 import (
 	"flag"
+	"github.com/bosim/gosyncnotifier/internal"
 	"log"
 	"log/slog"
 	"os"
-	"github.com/bosim/gosyncnotifier/internal"
 	"time"
 )
 
@@ -64,7 +64,7 @@ func main() {
 			slog.Info("Got event will run command",
 				"origin", e.Origin.String())
 		}
-		
+
 		if err := runner.Run(); err != nil {
 			slog.Error("Got error", "error", err)
 		}

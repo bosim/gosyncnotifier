@@ -10,7 +10,7 @@ import (
 
 type Watcher struct {
 	syncChan chan SyncEvent
-	dirName string
+	dirName  string
 }
 
 func (watcher *Watcher) Run() {
@@ -59,8 +59,8 @@ func (watcher *Watcher) Run() {
 
 			watcher.syncChan <- SyncEvent{
 				Filename: filename,
-				Type: action,
-				Origin: OriginWatcher,
+				Type:     action,
+				Origin:   OriginWatcher,
 			}
 
 			offset += syscall.SizeofInotifyEvent + int(event.Len)
@@ -71,6 +71,6 @@ func (watcher *Watcher) Run() {
 func NewWatcher(syncChan chan SyncEvent, dirName string) *Watcher {
 	return &Watcher{
 		syncChan: syncChan,
-		dirName: dirName,
+		dirName:  dirName,
 	}
 }
