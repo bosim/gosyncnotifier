@@ -5,7 +5,6 @@ import (
 	"github.com/bosim/gosyncnotifier/internal"
 	"log"
 	"log/slog"
-	"os"
 	"time"
 )
 
@@ -29,17 +28,15 @@ func main() {
 
 	syncChannel := make(chan internal.SyncEvent, 1)
 
-	if len(*watcherPath) == 0 {
-		slog.Info("watcher-path not specified")
-		flag.Usage()
-		os.Exit(1)
-	}
-
 	cmd := flag.Args()
 	runner := internal.NewRunner(cmd)
 
-	watcher := internal.NewWatcher(syncChannel, *watcherPath)
-	go watcher.Run()
+	if len(*watcherPath) > 0 {
+		watcher := internal.NewWatcher(syncChannel, *watcherPath)
+		go watcher.Run()
+	} else {
+		slog.Warn("watcher-path not specified, disabling watcher")
+	}
 
 	timer := internal.NewTimer(syncChannel, time.Duration(*timerInterval)*time.Minute)
 	go timer.Run()
