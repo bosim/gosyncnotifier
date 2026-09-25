@@ -80,7 +80,7 @@ func (watcher *Watcher) handleEvent(event fsnotify.Event) {
 			Type:     SyncEventCreated,
 			Origin:   OriginWatcher,
 		}
-	case event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename):
+	case event.Has(fsnotify.Remove), event.Has(fsnotify.Rename):
 		isWatched := slices.Contains(watcher.watcher.WatchList(), event.Name)
 		if isWatched {
 			slog.Debug("Removed/Moved Out", "name", event.Name)
