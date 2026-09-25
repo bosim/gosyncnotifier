@@ -7,7 +7,6 @@ const (
 	SyncEventCreated
 	SyncEventModified
 	SyncEventDeleted
-	SyncEventMoved
 )
 
 func (t SyncEventType) String() string {
@@ -20,8 +19,6 @@ func (t SyncEventType) String() string {
 		return "modified"
 	case SyncEventDeleted:
 		return "deleted"
-	case SyncEventMoved:
-		return "moved"
 	}
 
 	return "unknown"
