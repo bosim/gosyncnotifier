@@ -78,6 +78,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	notifier, err := internal.NewNotifier()
+	if err != nil {
+		slog.Warn("notify-send is not found")
+	}
+
 	syncChannel <- internal.SyncEvent{
 		Origin: internal.OriginInit,
 	}
@@ -100,7 +105,8 @@ func main() {
 		}
 
 		if err := runner.Run(); err != nil {
-			slog.Error("Got error", "error", err)
+			slog.Error("Error running command", "error", err)
+			notifier.Critical(fmt.Sprintf("Error running command: %v", err))
 		}
 
 	}
