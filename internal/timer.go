@@ -11,6 +11,8 @@ type Timer struct {
 }
 
 func (timer *Timer) Run() {
+	// Use a ticker (instead of sleep) to compensate for laptop being suspended
+	// We would like to trigger as it wakes up which sleep won't do
 	ticker := time.NewTicker(time.Duration(10) * time.Second)
 
 	for range ticker.C {
@@ -18,7 +20,7 @@ func (timer *Timer) Run() {
 			timer.syncChan <- SyncEvent{
 				Origin: OriginTimer,
 			}
-			timer.nextTime = time.Now().Unix() + int64(timer.interval.Seconds())
+			timer.Reset()
 		}
 	}
 }
