@@ -18,17 +18,16 @@ type Watcher struct {
 	watcher  *fsnotify.Watcher
 }
 
-func NewWatcher(syncChan chan SyncEvent, dirName string) *Watcher {
+func NewWatcher(syncChan chan SyncEvent, dirName string) (*Watcher, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		// XXX return error
-		panic("Error initializing watcher")
+		return nil, err
 	}
 	return &Watcher{
 		syncChan: syncChan,
 		dirName:  dirName,
 		watcher:  watcher,
-	}
+	}, nil
 }
 
 func (watcher *Watcher) addRecursively(rootPath string) error {

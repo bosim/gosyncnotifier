@@ -54,13 +54,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	runner := internal.NewRunner(cmd)
-
 	var watcher *internal.Watcher
 	var timer *internal.Timer
 
 	if len(*watcherPath) > 0 {
-		watcher = internal.NewWatcher(syncChannel, *watcherPath)
+		var err error
+		watcher, err = internal.NewWatcher(syncChannel, *watcherPath)
+		if err != nil {
+			slog.Error("Unable to initialize watcher", "error", err)
+			os.Exit(1)
+		}
 		go watcher.Run()
 	} else {
 		slog.Warn("watcher-path not specified, disabling watcher")
@@ -74,13 +77,19 @@ func main() {
 	}
 
 	if timer == nil && watcher == nil {
-		slog.Error("either timer or watcher needs to be active")
+		slog.Error("Either timer or watcher needs to be active")
 		os.Exit(1)
 	}
 
 	notifier, err := internal.NewNotifier()
 	if err != nil {
 		slog.Warn("notify-send is not found")
+	}
+
+	runner, err := internal.NewRunner(cmd)
+	if err != nil {
+		slog.Error("Executable is not found")
+		os.Exit(1)
 	}
 
 	syncChannel <- internal.SyncEvent{

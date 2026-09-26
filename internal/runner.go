@@ -7,24 +7,32 @@ import (
 )
 
 type Runner struct {
-	cmd []string
+	program string
+	args    []string
 }
 
 func (r Runner) Run() error {
-	program := r.cmd[0]
-	args := r.cmd[1:]
 
-	slog.Debug("Running command", "program", program, "args", args)
+	slog.Debug("Running command", "program", r.program, "args", r.args)
 
-	cmd := exec.Command(program, args...)
+	cmd := exec.Command(r.program, r.args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	return cmd.Run()
 }
 
-func NewRunner(cmd []string) *Runner {
-	return &Runner{
-		cmd: cmd,
+func NewRunner(cmd []string) (*Runner, error) {
+	cmdExec, err := exec.LookPath(cmd[0])
+	if err != nil {
+		return nil, err
 	}
+
+	program := cmdExec
+	args := cmd[1:]
+
+	return &Runner{
+		program: program,
+		args:    args,
+	}, nil
 }
