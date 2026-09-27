@@ -45,8 +45,34 @@ go install github.com/bosim/gosyncnotifier@latest
 
 ## Usage
 
-Run the notifier with your watch directory and sync command. The exact flags may vary based on your local build, but the general pattern is:
+Run `gosn --help` to get a full description of options:
 
+```
+gosn - run commands based on timer or file activity
+
+Basic syntax:
+  gosn <flags> -- <command>
+
+Command will be run if either timer is triggered or new file activity occur
+
+The following flags are available:
+
+  -log-level string
+    	The minimum loglevel (default "info")
+  -notifier-enabled
+    	Whether desktop notifications are sent or not (default true)
+  -notifier-exec string
+    	Name or location of a notify-send compatible executable (default "notify-send")
+  -notifier-post-command
+    	Sent a low priority desktop notifications are command has completed
+  -timer-interval int
+    	Specifies the interval (in minutes) on how often the timer part should trigger, 0 is disabled (default 10)
+  -watcher-path string
+    	The path that the notifier should monitor
+
+Example:
+  gosn -timer-interval 0 -watcher-path /home/user/test -- rsync -avz -e ssh /home/user/test user@server:/dir
+```
 
 Typical workflow:
 1. choose a directory to watch
@@ -63,12 +89,14 @@ This will:
 - watch the directory for file changes
 - trigger the sync command after relevant updates
 - also run the sync command on the configured interval
+- provide desktop notification in case of failed command
 
 ## Notes
 
 - Use a sync command that matches your environment and destination.
 - Keep the watched directory scope narrow to avoid unnecessary syncs.
 - If your sync tool is expensive or slow, consider batching changes or setting a reasonable interval.
+- The tool should cope with laptops being suspended which the basic `inotifywait` cannot cope with.
 
 ## License
 
