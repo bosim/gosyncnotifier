@@ -8,7 +8,7 @@ It is based on the idea described in [this blog post](https://book.rymcg.tech/bl
 
 ## Overview
 
-`gosyncnotifier` watches one or more directories for changes and triggers a sync action when:
+`gosyncnotifier`/`gosn` watches one or more directories for changes and triggers a sync action when:
 - a file changes
 - a timer interval elapses
 
@@ -86,9 +86,9 @@ gosn -timer-interval 10 -watcher-path /home/user/test -- rsync -avz -e ssh /home
 ```
 
 This will:
-- watch the directory for file changes
+- watch the directory (`/home/user/test`) for file changes
 - trigger the sync command after relevant updates
-- also run the sync command on the configured interval
+- also run the sync command on the configured interval (10 minutes)
 - provide desktop notification in case of failed command
 
 ## Notes
