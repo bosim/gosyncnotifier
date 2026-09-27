@@ -7,7 +7,20 @@ import (
 	"os/exec"
 )
 
-type Notifier struct {
+type Notifier interface {
+	Low(message string) error
+	Normal(message string) error
+	Critical(message string) error
+}
+
+type dummyNotifier struct {
+}
+
+func (n dummyNotifier) Low(message string) error { return nil }
+func (n dummyNotifier) Normal(message string) error { return nil }
+func (n dummyNotifier) Critical(message string) error { return nil }
+
+type notifier struct {
 	notifySendExec string
 }
 
@@ -32,7 +45,7 @@ func (nt notifierEventType) String() string {
 	return "unknown"
 }
 
-func (n Notifier) run(eventType notifierEventType, message string) error {
+func (n notifier) run(eventType notifierEventType, message string) error {
 	if n.notifySendExec == "" {
 		return fmt.Errorf("notify-send is not found")
 	}
@@ -55,25 +68,30 @@ func (n Notifier) run(eventType notifierEventType, message string) error {
 
 }
 
-func (n Notifier) Low(message string) error {
+func (n notifier) Low(message string) error {
 	return n.run(low, message)
 }
 
-func (n Notifier) Normal(message string) error {
+func (n notifier) Normal(message string) error {
 	return n.run(normal, message)
 }
 
-func (n Notifier) Critical(message string) error {
+func (n notifier) Critical(message string) error {
 	return n.run(critical, message)
 }
 
-func NewNotifier() (*Notifier, error) {
-	notifySendExec, err := exec.LookPath("notify-send")
+func NewNotifier(enabled bool, notifySendExec string) (Notifier, error) {
+	if !enabled {
+		return &dummyNotifier{}, nil
+	}
+
+	var err error
+	notifySendExec, err = exec.LookPath(notifySendExec)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Notifier{
+	return &notifier{
 		notifySendExec: notifySendExec,
 	}, nil
 }

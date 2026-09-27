@@ -27,6 +27,9 @@ func main() {
 	timerInterval := flag.Int("timer-interval", 10, "Specifies the interval (in minutes) on how often the timer part should trigger, 0 is disabled")
 	watcherPath := flag.String("watcher-path", "", "The path that the notifier should monitor")
 	loglevel := flag.String("log-level", "info", "The minimum loglevel")
+	notifierEnabled := flag.Bool("notifier-enabled", true, "Whether desktop notifications are sent or not")
+	notifierExecutable := flag.String("notifier-exec", "notify-send", "Name or location of a notify-send compatible executable")
+	notifierPostCommand := flag.Bool("notifier-post-command", false, "Sent a low priority desktop notifications are command has completed")
 
 	flag.Usage = func() {
 		fmt.Printf("%s - run commands based on timer or file activity\n\n", programName)
@@ -81,7 +84,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	notifier, err := internal.NewNotifier()
+	notifier, err := internal.NewNotifier(*notifierEnabled, *notifierExecutable)
 	if err != nil {
 		slog.Warn("notify-send is not found")
 	}
@@ -116,6 +119,8 @@ func main() {
 		if err := runner.Run(); err != nil {
 			slog.Error("Error running command", "error", err)
 			notifier.Critical(fmt.Sprintf("Error running command: %v", err))
+		} else if *notifierPostCommand {
+			notifier.Low("Command can successful")
 		}
 
 	}
