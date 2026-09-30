@@ -2,8 +2,6 @@ package internal
 
 import (
 	"fmt"
-	"log/slog"
-	"os"
 	"os/exec"
 )
 
@@ -58,14 +56,7 @@ func (n notifier) run(eventType notifierEventType, message string) error {
 		message,
 	}
 
-	slog.Debug("Running command", "program", program, "args", args)
-
-	cmd := exec.Command(program, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	return cmd.Run()
-
+	return runCommand(program, args)
 }
 
 func (n notifier) Low(message string) error {

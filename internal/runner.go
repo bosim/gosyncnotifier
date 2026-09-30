@@ -1,8 +1,6 @@
 package internal
 
 import (
-	"log/slog"
-	"os"
 	"os/exec"
 )
 
@@ -12,14 +10,7 @@ type Runner struct {
 }
 
 func (r Runner) Run() error {
-
-	slog.Debug("Running command", "program", r.program, "args", r.args)
-
-	cmd := exec.Command(r.program, r.args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	return cmd.Run()
+	return runCommand(r.program, r.args)
 }
 
 func NewRunner(cmd []string) (*Runner, error) {
