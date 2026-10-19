@@ -79,7 +79,7 @@ func NewNotifier(enabled bool, notifySendExec string) (Notifier, error) {
 	var err error
 	notifySendExec, err = exec.LookPath(notifySendExec)
 	if err != nil {
-		return nil, err
+		return &dummyNotifier{}, err
 	}
 
 	return &notifier{

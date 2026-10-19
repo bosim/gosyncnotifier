@@ -86,12 +86,12 @@ func main() {
 
 	notifier, err := internal.NewNotifier(*notifierEnabled, *notifierExecutable)
 	if err != nil {
-		slog.Warn("notify-send is not found")
+		slog.Warn("Error creating notifier", "error", err)
 	}
 
 	runner, err := internal.NewRunner(cmd)
 	if err != nil {
-		slog.Error("Executable is not found")
+		slog.Error("Error creating runner", "error", err)
 		os.Exit(1)
 	}
 
