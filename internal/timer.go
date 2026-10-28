@@ -13,7 +13,8 @@ type Timer struct {
 func (timer *Timer) Run() {
 	// Use a ticker (instead of sleep) to compensate for laptop being suspended
 	// We would like to trigger as it wakes up which sleep won't do
-	ticker := time.NewTicker(time.Duration(10) * time.Second)
+	ticker := time.NewTicker(min(timer.interval,
+		time.Duration(10) * time.Second))
 
 	for range ticker.C {
 		if time.Now().Unix() >= timer.nextTime {
