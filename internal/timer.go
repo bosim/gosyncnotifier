@@ -13,10 +13,15 @@ type Timer struct {
 }
 
 func (timer *Timer) Run(ctx context.Context) {
+	if timer.interval <= 0 {
+		slog.Info("Timer Run disabled by non-positive interval", "interval", timer.interval)
+		return
+	}
+
 	// Use a ticker (instead of sleep) to compensate for laptop being suspended
 	// We would like to trigger as it wakes up which sleep won't do
-	ticker := time.NewTicker(min(timer.interval,
-		time.Duration(10) * time.Second))
+	ticker := time.NewTicker(min(timer.interval, 10*time.Second))
+	defer ticker.Stop()
 
 	for {
 		select {

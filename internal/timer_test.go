@@ -2,117 +2,179 @@ package internal
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 )
+
+const timerTestTimeout = 2 * time.Second
 
 // TestNewTimerInitialization verifies the constructor correctly sets the nextTime.
 func TestNewTimerInitialization(t *testing.T) {
 	interval := 10 * time.Second
 	syncChan := make(chan SyncEvent, 1)
 
+	before := time.Now().Unix()
 	timer := NewTimer(syncChan, interval)
+	after := time.Now().Unix()
 
 	if timer.interval != interval {
 		t.Errorf("Interval mismatch. Expected %v, got %v", interval, timer.interval)
 	}
 
-	// Verify nextTime is set correctly (Current time + interval)
-	expectedNextTime := time.Now().Unix() + int64(interval.Seconds())
-	if timer.nextTime != expectedNextTime {
-		t.Errorf("nextTime mismatch. Expected %d, got %d", expectedNextTime, timer.nextTime)
+	// nextTime uses Unix seconds, so allow for the clock crossing a second
+	// boundary while the constructor runs.
+	minNextTime := before + int64(interval.Seconds())
+	maxNextTime := after + int64(interval.Seconds())
+	if timer.nextTime < minNextTime || timer.nextTime > maxNextTime {
+		t.Errorf("nextTime = %d, want between %d and %d", timer.nextTime, minNextTime, maxNextTime)
 	}
 }
 
-// TestTimerZeroIntervalDisablesTimerAndChannel
-func TestTimerZeroIntervalDisablesTimerAndChannel(t *testing.T) {
-	syncChan := make(chan SyncEvent, 10)
-	timer := NewTimer(syncChan, 0)
+// TestTimerReset verifies Reset schedules the next event one interval away.
+func TestTimerReset(t *testing.T) {
+	interval := 5 * time.Second
+	timer := NewTimer(make(chan SyncEvent, 1), interval)
 
-	// Verify that when interval is 0, the timer object is still created
-	// but its state prevents it from firing events.
-	if timer == nil || timer.interval != 0 {
-		t.Fatal("NewTimer failed to handle zero interval")
+	// Move nextTime away from its initial value so we can tell Reset changed it.
+	timer.nextTime = 0
+
+	before := time.Now().Unix()
+	timer.Reset()
+	after := time.Now().Unix()
+
+	minNextTime := before + int64(interval.Seconds())
+	maxNextTime := after + int64(interval.Seconds())
+	if timer.nextTime < minNextTime || timer.nextTime > maxNextTime {
+		t.Errorf("nextTime = %d, want between %d and %d", timer.nextTime, minNextTime, maxNextTime)
 	}
-
-	// In a real test, we would monitor syncChan for events.
-	// Here, we ensure the object exists and the interval is set correctly.
 }
 
-// TestTimerRunScheduleAndReset verifies the scheduling logic in the Run method.
+// TestTimerRunWithZeroIntervalIsDisabled verifies that a non-positive interval
+// makes Run return immediately without emitting events.
+func TestTimerRunWithZeroIntervalIsDisabled(t *testing.T) {
+	tests := []struct {
+		name     string
+		interval time.Duration
+	}{
+		{name: "zero interval", interval: 0},
+		{name: "negative interval", interval: -time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			syncChan := make(chan SyncEvent, 1)
+			timer := NewTimer(syncChan, tt.interval)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				timer.Run(ctx)
+			}()
+
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("Run did not return for a non-positive interval")
+			}
+
+			select {
+			case event := <-syncChan:
+				t.Errorf("unexpected event for a disabled timer: %+v", event)
+			default:
+			}
+		})
+	}
+}
+
+// TestTimerRunScheduleAndReset verifies that Run waits for the interval before
+// firing, and that it schedules subsequent events rather than firing in a loop.
 func TestTimerRunScheduleAndReset(t *testing.T) {
-	// Use a very short interval for testing purposes (e.g., 100ms)
-	testInterval := 100 * time.Millisecond
+	testInterval := time.Second
 	syncChan := make(chan SyncEvent, 10)
-
 	timer := NewTimer(syncChan, testInterval)
 
-	// Capture the time before starting the run loop
-	startTime := time.Now()
-
-	// Run the timer in a separate goroutine so we can stop it later
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		timer.Run(ctx)
 	}()
-
-	// Wait for the channel to receive an event, with a generous timeout
-	select {
-	case <-syncChan:
-		// Assert that the event was received around the expected time
-		if time.Since(startTime) < 0 || time.Since(startTime) > (testInterval+50*time.Millisecond) {
-			t.Errorf("Event received at %v, but expected between %v and %v (Time diff: %v)", time.Now(), startTime, startTime.Add(testInterval), time.Since(startTime))
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(timerTestTimeout):
+			t.Error("Run did not stop during cleanup")
 		}
-		t.Log("Successfully received a scheduled sync event.")
-	case <-time.After(1 * time.Second): // Increased timeout for robustness
-		t.Error("Timer did not trigger any sync events within the timeout period.")
+	})
+
+	// The first event must not arrive before the interval. The generous lower
+	// bound keeps this reliable on a loaded machine.
+	select {
+	case event := <-syncChan:
+		t.Fatalf("received event before the interval elapsed: %+v", event)
+	case <-time.After(250 * time.Millisecond):
 	}
 
-	// The previous conceptual check is now covered by the assertion above.
+	first := receiveTimerEvent(t, syncChan)
+	if first.Origin != OriginTimer {
+		t.Errorf("Origin = %v, want %v", first.Origin, OriginTimer)
+	}
+	if first.Type != SyncEventNone {
+		t.Errorf("Type = %v, want %v", first.Type, SyncEventNone)
+	}
+
+	// A second event should be scheduled, not emitted immediately.
+	select {
+	case event := <-syncChan:
+		t.Fatalf("received a second event too soon after the first: %+v", event)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	second := receiveTimerEvent(t, syncChan)
+	if second.Origin != OriginTimer {
+		t.Errorf("Origin = %v, want %v", second.Origin, OriginTimer)
+	}
+	if second.Type != SyncEventNone {
+		t.Errorf("Type = %v, want %v", second.Type, SyncEventNone)
+	}
 }
 
-// TestTickerConsumptionConcurrency verifies that multiple goroutines can safely consume events from the timer.
-func TestTickerConsumptionConcurrency(t *testing.T) {
-	syncChan := make(chan SyncEvent, 100)
-	timer := NewTimer(syncChan, 10*time.Millisecond)
+// TestTimerRunStopsOnContextCancellation verifies that Run exits cleanly when
+// its context is canceled.
+func TestTimerRunStopsOnContextCancellation(t *testing.T) {
+	syncChan := make(chan SyncEvent, 1)
+	timer := NewTimer(syncChan, 10*time.Second)
+
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		timer.Run(ctx)
 	}()
 
-	var wg sync.WaitGroup
-	numConsumers := 50
-
-	// Start many goroutines trying to read from the channel concurrently
-	for i := 0; i < numConsumers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				// Attempt to read an event. This should be safe.
-				select {
-				case _, ok := <-syncChan:
-					if !ok {
-						t.Error("Error reading from channels")
-					}
-					// Process the event (e.g., log it or handle notification)
-					return
-				case <-time.After(time.Second):
-					// If no event is available, wait a bit before checking again.
-					t.Error("Timer did not trigger any sync events within the timeout period.")
-				}
-			}
-		}()
-	}
-
-	// Allow the timer to run for a period to generate events
-	time.Sleep(200 * time.Millisecond)
-
-	// Wait a short time to ensure consumers finish their loop cycles
+	// Give Run a moment to start its ticker before cancelling.
 	time.Sleep(50 * time.Millisecond)
+	cancel()
 
-	wg.Wait()
+	select {
+	case <-done:
+	case <-time.After(timerTestTimeout):
+		t.Fatal("Run did not return after context cancellation")
+	}
+}
+
+func receiveTimerEvent(t *testing.T, syncChan chan SyncEvent) SyncEvent {
+	t.Helper()
+
+	select {
+	case event := <-syncChan:
+		return event
+	case <-time.After(timerTestTimeout):
+		t.Fatal("timed out waiting for timer event")
+		return SyncEvent{}
+	}
 }
