@@ -116,13 +116,13 @@ func (watcher *Watcher) Run(ctx context.Context) {
 
 	for {
 		select {
-		case event, ok := <-watcher.watcher.Events():
+		case event, ok := <-watcher.watcher.Events:
 			if !ok {
 				return
 			}
 			watcher.handleEvent(event)
 
-		case err, ok := <-watcher.watcher.Errors():
+		case err, ok := <-watcher.watcher.Errors:
 			if !ok {
 				return
 			}
