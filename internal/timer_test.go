@@ -65,8 +65,7 @@ func TestTimerRunWithZeroIntervalIsDisabled(t *testing.T) {
 			syncChan := make(chan SyncEvent, 1)
 			timer := NewTimer(syncChan, tt.interval)
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			ctx := t.Context()
 
 			done := make(chan struct{})
 			go func() {
@@ -96,14 +95,13 @@ func TestTimerRunScheduleAndReset(t *testing.T) {
 	syncChan := make(chan SyncEvent, 10)
 	timer := NewTimer(syncChan, testInterval)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := t.Context()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		timer.Run(ctx)
 	}()
 	t.Cleanup(func() {
-		cancel()
 		select {
 		case <-done:
 		case <-time.After(timerTestTimeout):
@@ -149,7 +147,9 @@ func TestTimerRunStopsOnContextCancellation(t *testing.T) {
 	syncChan := make(chan SyncEvent, 1)
 	timer := NewTimer(syncChan, 10*time.Second)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

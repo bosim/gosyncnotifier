@@ -322,7 +322,9 @@ func TestHandleEventChmodProducesNoEvent(t *testing.T) {
 func TestRunStopsOnContextCancellation(t *testing.T) {
 	watcher, _, dir := newTestWatcher(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -342,8 +344,7 @@ func TestRunStopsOnContextCancellation(t *testing.T) {
 func TestRunReturnsForInvalidDirectory(t *testing.T) {
 	watcher, _, dir := newTestWatcher(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	done := make(chan struct{})
 	go func() {
@@ -362,8 +363,7 @@ func TestRunReturnsForInvalidDirectory(t *testing.T) {
 func TestRunStopsWhenUnderlyingWatcherCloses(t *testing.T) {
 	watcher, _, dir := newTestWatcher(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	done := make(chan struct{})
 	go func() {
@@ -388,14 +388,13 @@ func TestRunStopsWhenUnderlyingWatcherCloses(t *testing.T) {
 func TestRunDetectsFileChanges(t *testing.T) {
 	watcher, syncChan, dir := newTestWatcher(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := t.Context()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		watcher.Run(ctx)
 	}()
 	t.Cleanup(func() {
-		cancel()
 		select {
 		case <-done:
 		case <-time.After(watcherTestTimeout):
@@ -435,14 +434,13 @@ func TestRunDetectsFileChanges(t *testing.T) {
 func TestRunDetectsNewDirectory(t *testing.T) {
 	watcher, syncChan, dir := newTestWatcher(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := t.Context()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		watcher.Run(ctx)
 	}()
 	t.Cleanup(func() {
-		cancel()
 		select {
 		case <-done:
 		case <-time.After(watcherTestTimeout):
