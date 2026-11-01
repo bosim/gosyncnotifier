@@ -1,6 +1,8 @@
 package internal
 
 import (
+	"context"
+	"log/slog"
 	"time"
 )
 
@@ -10,18 +12,24 @@ type Timer struct {
 	interval time.Duration
 }
 
-func (timer *Timer) Run() {
+func (timer *Timer) Run(ctx context.Context) {
 	// Use a ticker (instead of sleep) to compensate for laptop being suspended
 	// We would like to trigger as it wakes up which sleep won't do
 	ticker := time.NewTicker(min(timer.interval,
 		time.Duration(10) * time.Second))
 
-	for range ticker.C {
-		if time.Now().Unix() >= timer.nextTime {
-			timer.syncChan <- SyncEvent{
-				Origin: OriginTimer,
+	for {
+		select {
+		case <-ticker.C:
+			if time.Now().Unix() >= timer.nextTime {
+				timer.syncChan <- SyncEvent{
+					Origin: OriginTimer,
+				}
+				timer.Reset()
 			}
-			timer.Reset()
+		case <-ctx.Done():
+			slog.Info("Timer Run loop stopped by context", "reason", ctx.Err())
+			return
 		}
 	}
 }

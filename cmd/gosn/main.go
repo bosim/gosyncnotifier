@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -48,6 +49,8 @@ func main() {
 
 	setupLogger(*loglevel)
 
+	ctx := context.Background()
+
 	syncChannel := make(chan internal.SyncEvent, 1)
 
 	cmd := flag.Args()
@@ -67,14 +70,14 @@ func main() {
 			slog.Error("Unable to initialize watcher", "error", err)
 			os.Exit(1)
 		}
-		go watcher.Run()
+		go watcher.Run(ctx)
 	} else {
 		slog.Warn("watcher-path not specified, disabling watcher")
 	}
 
 	if *timerInterval > 0 {
 		timer = internal.NewTimer(syncChannel, time.Duration(*timerInterval)*time.Minute)
-		go timer.Run()
+		go timer.Run(ctx)
 	} else {
 		slog.Warn("timer-interval is 0, disabling timer")
 	}
@@ -98,6 +101,7 @@ func main() {
 	syncChannel <- internal.SyncEvent{
 		Origin: internal.OriginInit,
 	}
+
 	for {
 		e := <-syncChannel
 
@@ -122,6 +126,5 @@ func main() {
 		} else if *notifierPostCommand {
 			notifier.Low("Command can successful")
 		}
-
 	}
 }

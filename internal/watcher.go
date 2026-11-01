@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -102,29 +103,35 @@ func (watcher *Watcher) handleEvent(event fsnotify.Event) {
 			Type:     SyncEventModified,
 			Origin:   OriginWatcher,
 		}
-
 	}
 }
 
-func (watcher *Watcher) Run() {
+func (watcher *Watcher) Run(ctx context.Context) {
 	err := watcher.addRecursively(watcher.dirName)
 	if err != nil {
-		panic(fmt.Sprintf("Error adding directory '%s': %v", watcher.dirName, err))
+		// Use context cancellation if possible, though initialization errors are usually fatal
+		slog.Error("Error adding directory recursively", "dir", watcher.dirName, "error", err)
+		return
 	}
 
 	for {
 		select {
-		case event, ok := <-watcher.watcher.Events:
+		case event, ok := <-watcher.watcher.Events():
 			if !ok {
 				return
 			}
 			watcher.handleEvent(event)
 
-		case err, ok := <-watcher.watcher.Errors:
+		case err, ok := <-watcher.watcher.Errors():
 			if !ok {
 				return
 			}
 			slog.Error("Watcher error", "error", err)
+
+		case <-ctx.Done():
+			slog.Info("Watcher Run loop stopped by context", "reason", ctx.Err())
+			return
 		}
 	}
 }
+
