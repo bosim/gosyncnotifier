@@ -42,7 +42,7 @@ After building or installing, update `pkg/` to point to your local path if runni
 
 3. **Command Execution**: The runner parses user-provided command as `<program> arg1 arg2...` and executes it.
 
-4. **Notation System**: Desktop notifications use three levels via notify-send:
+4. **Notation System**: Desktop notifications use three levels via the freedesktop.org D-Bus notification service, or optionally via a `notify-send`-compatible executable:
    - `low`: Debug/debugging information (for developers)
    - `normal`: General notification (for users of the tool)
    - `critical`: Error/failure notification
@@ -60,12 +60,17 @@ After building or installing, update `pkg/` to point to your local path if runni
 The notifier supports a three-level notification mechanism:
 
 ```go
-typeNotifier interface {
-    Low(message string)   // "Debug/Development info"
-    Normal(message string) // "User-facing notification"
+type Notifier interface {
+    Low(message string)      // "Debug/Development info"
+    Normal(message string)   // "User-facing notification"
     Critical(message string) // "Error/Failure notification"
+    Close() error
 }
 ```
+
+The default `dbus` backend connects to the session bus once and reconnects if a
+notification fails. The `command` backend runs a `notify-send`-compatible
+executable and is selected with `-notifier-backend=command`.
 
 ## Usage Patterns
 
@@ -123,6 +128,20 @@ Send a secondary low-priority notification when command completes:
 gosn -notifier-post-command=true ...
 ```
 
+### Notification Backend
+
+Use the session D-Bus notification service (default):
+
+```bash
+gosn -notifier-backend=dbus ...
+```
+
+Use a `notify-send`-compatible executable instead:
+
+```bash
+gosn -notifier-backend=command -notifier-exec=notify-send ...
+```
+
 ## CLI Reference
 
 ### Commands and Options
@@ -133,7 +152,8 @@ gosn -notifier-post-command=true ...
 | `--watcher-path` (optional) | empty string | Path to monitor for events |
 | `--log-level` (flags) | info | Minimum log level |
 | `--notifier-enabled` | true | Enable desktop notifications |
-| `--notifier-exec` (default: notify-send) | `notify-send` | Executable name (must be available) |
+| `--notifier-backend` | `dbus` | Notification backend: `dbus` or `command` |
+| `--notifier-exec` (default: notify-send) | `notify-send` | Executable name for the `command` backend (must be available) |
 | `--notifier-post-command` | false | Send follow-up notification |
 
 ### CLI Syntax
@@ -148,7 +168,7 @@ Full options are printed with `gosn -help`.
 
 - **Watch Scope**: Limit watched paths to avoid excessive syncs on slow environments
 - **Suspension Handling**: Use Go ticker (`time.NewTicker`) instead of sleep loops for responsive suspends
-- **Notifier Dependency**: Requires executable installed system-wide or in PATH
+- **Notifier Dependency**: The `dbus` backend requires a reachable session bus (`DBUS_SESSION_BUS_ADDRESS`); the `command` backend requires a `notify-send`-compatible executable in PATH
 - **Execution Performance**: Command execution runs regardless of file changes unless explicitly disabled
 
 ## Development Workflow

@@ -29,8 +29,9 @@ func main() {
 	watcherPath := flag.String("watcher-path", "", "The path that the notifier should monitor")
 	loglevel := flag.String("log-level", "info", "The minimum loglevel")
 	notifierEnabled := flag.Bool("notifier-enabled", true, "Whether desktop notifications are sent or not")
-	notifierExecutable := flag.String("notifier-exec", "notify-send", "Name or location of a notify-send compatible executable")
-	notifierPostCommand := flag.Bool("notifier-post-command", false, "Sent a low priority desktop notifications are command has completed")
+	notifierBackend := flag.String("notifier-backend", string(internal.NotifierBackendDBus), `Notification backend: "dbus" or "command"`)
+	notifierExecutable := flag.String("notifier-exec", "notify-send", "Name or location of a notify-send compatible executable (command backend only)")
+	notifierPostCommand := flag.Bool("notifier-post-command", false, "Send a low priority desktop notification after the command has completed")
 
 	flag.Usage = func() {
 		fmt.Printf("%s - run commands based on timer or file activity\n\n", programName)
@@ -48,6 +49,12 @@ func main() {
 	flag.Parse()
 
 	setupLogger(*loglevel)
+
+	backend, err := internal.ParseNotifierBackend(*notifierBackend)
+	if err != nil {
+		slog.Error("Invalid notifier backend", "error", err)
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 
@@ -87,10 +94,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	notifier, err := internal.NewNotifier(*notifierEnabled, *notifierExecutable)
+	notifier, err := internal.NewNotifier(*notifierEnabled, backend, *notifierExecutable)
 	if err != nil {
 		slog.Warn("Error creating notifier", "error", err)
 	}
+	defer notifier.Close()
 
 	runner, err := internal.NewRunner(cmd)
 	if err != nil {
@@ -122,9 +130,13 @@ func main() {
 
 		if err := runner.Run(); err != nil {
 			slog.Error("Error running command", "error", err)
-			notifier.Critical(fmt.Sprintf("Error running command: %v", err))
+			if notifyErr := notifier.Critical(fmt.Sprintf("Error running command: %v", err)); notifyErr != nil {
+				slog.Warn("Error sending notification", "error", notifyErr)
+			}
 		} else if *notifierPostCommand {
-			notifier.Low("Command can successful")
+			if notifyErr := notifier.Low("Command ran successfully"); notifyErr != nil {
+				slog.Warn("Error sending notification", "error", notifyErr)
+			}
 		}
 	}
 }

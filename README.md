@@ -24,7 +24,7 @@ This is useful for:
 - triggers a configurable sync command
 - supports time-based sync intervals
 - works with common sync tools such as `rsync`, `rclone`, and similar executables
-- provide desktop notifications using `notify-send`
+- provide desktop notifications via D-Bus, with an optional `notify-send`-compatible command backend
 - lightweight Go-based implementation
 
 ## Installation
@@ -59,12 +59,14 @@ The following flags are available:
 
   -log-level string
     	The minimum loglevel (default "info")
+  -notifier-backend string
+    	Notification backend: "dbus" or "command" (default "dbus")
   -notifier-enabled
     	Whether desktop notifications are sent or not (default true)
   -notifier-exec string
-    	Name or location of a notify-send compatible executable (default "notify-send")
+    	Name or location of a notify-send compatible executable (command backend only) (default "notify-send")
   -notifier-post-command
-    	Sent a low priority desktop notifications are command has completed
+    	Send a low priority desktop notification after the command has completed
   -timer-interval int
     	Specifies the interval (in minutes) on how often the timer part should trigger, 0 is disabled (default 10)
   -watcher-path string
@@ -73,6 +75,26 @@ The following flags are available:
 Example:
   gosn -timer-interval 0 -watcher-path /home/user/test -- rsync -avz -e ssh /home/user/test user@server:/dir
 ```
+
+### Notification backends
+
+By default, notifications are sent directly through the freedesktop.org D-Bus
+notification service:
+
+```bash
+gosn -notifier-backend=dbus ...
+```
+
+If you prefer to use a `notify-send`-compatible executable instead, select the
+command backend and optionally point it at a different executable:
+
+```bash
+gosn -notifier-backend=command -notifier-exec=notify-send ...
+```
+
+The command backend is useful if you already depend on a specific
+`notify-send`-compatible wrapper or want to keep the previous command-based
+behavior.
 
 Typical workflow:
 1. choose a directory to watch
@@ -97,6 +119,7 @@ This will:
 - Keep the watched directory scope narrow to avoid unnecessary syncs.
 - If your sync tool is expensive or slow, consider batching changes or setting a reasonable interval.
 - The tool should cope with laptops being suspended which the basic `inotifywait` cannot cope with.
+- Direct D-Bus notifications require `DBUS_SESSION_BUS_ADDRESS` to point at a session bus. Use `-notifier-backend=command` if you prefer a `notify-send`-compatible wrapper.
 
 ## License
 
