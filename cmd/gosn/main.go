@@ -164,11 +164,17 @@ eventLoop:
 			}
 
 			if err := runner.Run(); err != nil {
-				slog.Error("Error running command", "error", err)
-				if notifyErr := notifier.Critical(fmt.Sprintf("Error running command: %v", err)); notifyErr != nil {
-					slog.Warn("Error sending notification", "error", notifyErr)
+				if ctx.Err() != nil {
+					// Shutdown raced with the command; don't report a failure
+					// notification while exiting.
+					slog.Info("Command did not complete cleanly during shutdown", "error", err)
+				} else {
+					slog.Error("Error running command", "error", err)
+					if notifyErr := notifier.Critical(fmt.Sprintf("Error running command: %v", err)); notifyErr != nil {
+						slog.Warn("Error sending notification", "error", notifyErr)
+					}
 				}
-			} else if *notifierPostCommand {
+			} else if *notifierPostCommand && ctx.Err() == nil {
 				if notifyErr := notifier.Low("Command ran successfully"); notifyErr != nil {
 					slog.Warn("Error sending notification", "error", notifyErr)
 				}
