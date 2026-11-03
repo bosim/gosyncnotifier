@@ -63,7 +63,20 @@ func (watcher *Watcher) removeRecursive(path string) {
 
 }
 
-func (watcher *Watcher) handleEvent(event fsnotify.Event) {
+// sendEvent forwards an event to the sync channel, giving up if the context is
+// cancelled first. This keeps Run responsive during shutdown even when the
+// receiver has stopped consuming events. It returns false when the send was
+// abandoned due to cancellation.
+func (watcher *Watcher) sendEvent(ctx context.Context, event SyncEvent) bool {
+	select {
+	case watcher.syncChan <- event:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (watcher *Watcher) handleEvent(ctx context.Context, event fsnotify.Event) {
 	switch {
 	case event.Has(fsnotify.Create):
 		slog.Debug("Created/Moved", "name", event.Name)
@@ -75,11 +88,11 @@ func (watcher *Watcher) handleEvent(event fsnotify.Event) {
 			}
 		}
 
-		watcher.syncChan <- SyncEvent{
+		watcher.sendEvent(ctx, SyncEvent{
 			Filename: event.Name,
 			Type:     SyncEventCreated,
 			Origin:   OriginWatcher,
-		}
+		})
 	case event.Has(fsnotify.Remove), event.Has(fsnotify.Rename):
 		isWatched := slices.Contains(watcher.watcher.WatchList(), event.Name)
 		if isWatched {
@@ -89,24 +102,28 @@ func (watcher *Watcher) handleEvent(event fsnotify.Event) {
 			slog.Debug("File changed/removed:", "name", event.Name)
 		}
 
-		watcher.syncChan <- SyncEvent{
+		watcher.sendEvent(ctx, SyncEvent{
 			Filename: event.Name,
 			Type:     SyncEventDeleted,
 			Origin:   OriginWatcher,
-		}
+		})
 
 	case event.Has(fsnotify.Write):
 		slog.Debug("Modified file", "name", event.Name)
 
-		watcher.syncChan <- SyncEvent{
+		watcher.sendEvent(ctx, SyncEvent{
 			Filename: event.Name,
 			Type:     SyncEventModified,
 			Origin:   OriginWatcher,
-		}
+		})
 	}
 }
 
 func (watcher *Watcher) Run(ctx context.Context) {
+	// Release the underlying fsnotify watcher (inotify descriptor) on exit;
+	// Close also closes the Events channel observed below.
+	defer watcher.watcher.Close()
+
 	err := watcher.addRecursively(watcher.dirName)
 	if err != nil {
 		// Use context cancellation if possible, though initialization errors are usually fatal
@@ -120,7 +137,7 @@ func (watcher *Watcher) Run(ctx context.Context) {
 			if !ok {
 				return
 			}
-			watcher.handleEvent(event)
+			watcher.handleEvent(ctx, event)
 
 		case err, ok := <-watcher.watcher.Errors:
 			if !ok {
