@@ -92,22 +92,18 @@ func main() {
 			slog.Error("Unable to initialize watcher", "error", err)
 			os.Exit(1)
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			watcher.Run(ctx)
-		}()
+		})
 	} else {
 		slog.Warn("watcher-path not specified, disabling watcher")
 	}
 
 	if *timerInterval > 0 {
 		timer = internal.NewTimer(syncChannel, time.Duration(*timerInterval)*time.Minute)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			timer.Run(ctx)
-		}()
+		})
 	} else {
 		slog.Warn("timer-interval is 0, disabling timer")
 	}
