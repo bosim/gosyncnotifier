@@ -27,10 +27,13 @@ func (timer *Timer) Run(ctx context.Context) {
 		select {
 		case <-ticker.C:
 			if time.Now().Unix() >= timer.nextTime {
-				timer.syncChan <- SyncEvent{
-					Origin: OriginTimer,
+				select {
+				case timer.syncChan <- SyncEvent{Origin: OriginTimer}:
+					timer.Reset()
+				case <-ctx.Done():
+					slog.Info("Timer Run loop stopped by context", "reason", ctx.Err())
+					return
 				}
-				timer.Reset()
 			}
 		case <-ctx.Done():
 			slog.Info("Timer Run loop stopped by context", "reason", ctx.Err())

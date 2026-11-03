@@ -7,6 +7,9 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/bosim/gosyncnotifier/internal"
@@ -26,8 +29,8 @@ func setupLogger(level string) {
 
 func main() {
 	timerInterval := flag.Int("timer-interval", 10, "Specifies the interval (in minutes) on how often the timer part should trigger, 0 is disabled")
-	watcherPath := flag.String("watcher-path", "", "The path that the notifier should monitor")
-	loglevel := flag.String("log-level", "info", "The minimum loglevel")
+	watcherPath := flag.String("watcher-path", "", "Directory to watch for file changes, empty disables the watcher")
+	loglevel := flag.String("log-level", "info", "The minimum log level (debug, info, warn, error)")
 	notifierEnabled := flag.Bool("notifier-enabled", true, "Whether desktop notifications are sent or not")
 	notifierBackend := flag.String("notifier-backend", string(internal.NotifierBackendDBus), `Notification backend: "dbus" or "command"`)
 	notifierExecutable := flag.String("notifier-exec", "notify-send", "Name or location of a notify-send compatible executable (command backend only)")
@@ -37,7 +40,7 @@ func main() {
 		fmt.Printf("%s - run commands based on timer or file activity\n\n", programName)
 		fmt.Printf("Basic syntax:\n")
 		fmt.Printf("  %s <flags> -- <command>\n\n", programName)
-		fmt.Printf("Command will be run if either timer is triggered or new file activity occur\n\n")
+		fmt.Printf("The command is run when the timer triggers or file activity occurs\n\n")
 		fmt.Printf("The following flags are available:\n\n")
 
 		flag.PrintDefaults()
@@ -56,7 +59,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
+	// Cancel the shared context on Ctrl-C (SIGINT) or SIGTERM so the watcher
+	// and timer goroutines can shut down gracefully.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Restore the default signal disposition after the first signal, so a
+	// second Ctrl-C force-quits even if shutdown is waiting on a command.
+	go func() {
+		<-ctx.Done()
+		stop()
+		slog.Info("Shutdown requested, press Ctrl-C again to force exit")
+	}()
 
 	syncChannel := make(chan internal.SyncEvent, 1)
 
@@ -69,6 +83,7 @@ func main() {
 
 	var watcher *internal.Watcher
 	var timer *internal.Timer
+	var wg sync.WaitGroup
 
 	if len(*watcherPath) > 0 {
 		var err error
@@ -77,14 +92,22 @@ func main() {
 			slog.Error("Unable to initialize watcher", "error", err)
 			os.Exit(1)
 		}
-		go watcher.Run(ctx)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			watcher.Run(ctx)
+		}()
 	} else {
 		slog.Warn("watcher-path not specified, disabling watcher")
 	}
 
 	if *timerInterval > 0 {
 		timer = internal.NewTimer(syncChannel, time.Duration(*timerInterval)*time.Minute)
-		go timer.Run(ctx)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			timer.Run(ctx)
+		}()
 	} else {
 		slog.Warn("timer-interval is 0, disabling timer")
 	}
@@ -110,8 +133,22 @@ func main() {
 		Origin: internal.OriginInit,
 	}
 
+eventLoop:
 	for {
 		e := <-syncChannel
+
+		select {
+		case <-ctx.Done():
+			// A signal arrived. An in-flight command (runner.Run) still runs to
+			// completion before we get here; watcher and timer already stopped.
+			slog.Info("Shutting down, waiting for watcher and timer to stop", "reason", ctx.Err())
+			break eventLoop
+		case e := <-syncChannel:
+			// A queued event may have raced with the signal; do not start
+			// another command while shutting down.
+			if ctx.Err() != nil {
+				break eventLoop
+			}
 
 		/* Event was generated from file modification */
 		if e.Type != internal.SyncEventNone && timer != nil {
@@ -139,4 +176,7 @@ func main() {
 			}
 		}
 	}
+
+	wg.Wait()
+	slog.Info("Shutdown complete")
 }
