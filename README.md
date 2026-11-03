@@ -73,9 +73,9 @@ The command is run when the timer triggers or file activity occurs
 The following flags are available:
 
   -log-level string
-    	Notification backend: "dbus" or "command" (default "dbus")
-  -notifier-backend string
     	The minimum log level (debug, info, warn, error) (default "info")
+  -notifier-backend string
+    	Notification backend: "dbus" or "command" (default "dbus")
   -notifier-enabled
     	Whether desktop notifications are sent or not (default true)
   -notifier-exec string
@@ -150,15 +150,18 @@ gosn -log-level error ...    # errors only
 
 ### Notifications
 
-Desktop notifications require a `notify-send` compatible executable (default
-`notify-send`, available on most Linux desktops).
+Desktop notifications are sent over the session D-Bus bus by default
+(`-notifier-backend=dbus`). With `-notifier-backend=command`, they go through a
+`notify-send`-compatible executable instead (default `notify-send`, available on
+most Linux desktops).
 
 - a critical notification is sent when the command fails
 - a low priority notification is sent after a successful run when `-notifier-post-command` is set
 - `-notifier-enabled=false` disables notifications entirely
 - `-notifier-exec` points to a different executable
 
-If the executable cannot be found, `gosn` logs a warning at startup and continues without sending notifications.
+If the `command` backend's executable cannot be found, `gosn` logs a warning at
+startup and continues without sending notifications.
 
 ### Graceful shutdown
 
