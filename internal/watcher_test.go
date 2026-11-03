@@ -182,7 +182,7 @@ func TestHandleEventCreateFile(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	watcher.handleEvent(fsnotify.Event{Name: file, Op: fsnotify.Create})
+	watcher.handleEvent(t.Context(), fsnotify.Event{Name: file, Op: fsnotify.Create})
 
 	event := receiveEvent(t, syncChan)
 	if event.Filename != file {
@@ -204,7 +204,7 @@ func TestHandleEventCreateDirectoryAddsRecursiveWatches(t *testing.T) {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
 
-	watcher.handleEvent(fsnotify.Event{Name: filepath.Join(dir, "new"), Op: fsnotify.Create})
+	watcher.handleEvent(t.Context(), fsnotify.Event{Name: filepath.Join(dir, "new"), Op: fsnotify.Create})
 
 	event := receiveEvent(t, syncChan)
 	if event.Type != SyncEventCreated {
@@ -223,7 +223,7 @@ func TestHandleEventCreateMissingPathStillEmitsEvent(t *testing.T) {
 	watcher, syncChan, dir := newTestWatcher(t)
 
 	missing := filepath.Join(dir, "vanished")
-	watcher.handleEvent(fsnotify.Event{Name: missing, Op: fsnotify.Create})
+	watcher.handleEvent(t.Context(), fsnotify.Event{Name: missing, Op: fsnotify.Create})
 
 	event := receiveEvent(t, syncChan)
 	if event.Filename != missing {
@@ -246,7 +246,7 @@ func TestHandleEventRemoveWatchedDirectory(t *testing.T) {
 		t.Fatalf("addRecursively() error = %v", err)
 	}
 
-	watcher.handleEvent(fsnotify.Event{Name: sub, Op: fsnotify.Remove})
+	watcher.handleEvent(t.Context(), fsnotify.Event{Name: sub, Op: fsnotify.Remove})
 
 	event := receiveEvent(t, syncChan)
 	if event.Filename != sub || event.Type != SyncEventDeleted || event.Origin != OriginWatcher {
@@ -272,7 +272,7 @@ func TestHandleEventRenameWatchedDirectory(t *testing.T) {
 		t.Fatalf("addRecursively() error = %v", err)
 	}
 
-	watcher.handleEvent(fsnotify.Event{Name: sub, Op: fsnotify.Rename})
+	watcher.handleEvent(t.Context(), fsnotify.Event{Name: sub, Op: fsnotify.Rename})
 
 	event := receiveEvent(t, syncChan)
 	if event.Filename != sub || event.Type != SyncEventDeleted || event.Origin != OriginWatcher {
@@ -287,7 +287,7 @@ func TestHandleEventRemoveUnwatchedFile(t *testing.T) {
 	watcher, syncChan, dir := newTestWatcher(t)
 
 	file := filepath.Join(dir, "unwatched.txt")
-	watcher.handleEvent(fsnotify.Event{Name: file, Op: fsnotify.Remove})
+	watcher.handleEvent(t.Context(), fsnotify.Event{Name: file, Op: fsnotify.Remove})
 
 	event := receiveEvent(t, syncChan)
 	if event.Filename != file || event.Type != SyncEventDeleted || event.Origin != OriginWatcher {
@@ -299,7 +299,7 @@ func TestHandleEventWrite(t *testing.T) {
 	watcher, syncChan, dir := newTestWatcher(t)
 
 	file := filepath.Join(dir, "written.txt")
-	watcher.handleEvent(fsnotify.Event{Name: file, Op: fsnotify.Write})
+	watcher.handleEvent(t.Context(), fsnotify.Event{Name: file, Op: fsnotify.Write})
 
 	event := receiveEvent(t, syncChan)
 	if event.Filename != file || event.Type != SyncEventModified || event.Origin != OriginWatcher {
@@ -310,7 +310,7 @@ func TestHandleEventWrite(t *testing.T) {
 func TestHandleEventChmodProducesNoEvent(t *testing.T) {
 	watcher, syncChan, dir := newTestWatcher(t)
 
-	watcher.handleEvent(fsnotify.Event{Name: filepath.Join(dir, "file.txt"), Op: fsnotify.Chmod})
+	watcher.handleEvent(t.Context(), fsnotify.Event{Name: filepath.Join(dir, "file.txt"), Op: fsnotify.Chmod})
 
 	select {
 	case event := <-syncChan:
@@ -380,6 +380,49 @@ func TestRunStopsWhenUnderlyingWatcherCloses(t *testing.T) {
 	case <-done:
 	case <-time.After(watcherTestTimeout):
 		t.Fatal("Run did not return after the underlying watcher was closed")
+	}
+}
+
+// TestRunStopsWhileBlockedOnSend verifies that Run returns on cancellation even
+// when it is blocked delivering an event to a receiver that stopped consuming,
+// as happens when main leaves its event loop during shutdown.
+func TestRunStopsWhileBlockedOnSend(t *testing.T) {
+	dir := t.TempDir()
+	syncChan := make(chan SyncEvent) // unbuffered, no consumer
+
+	watcher, err := NewWatcher(syncChan, dir)
+	if err != nil {
+		t.Fatalf("NewWatcher() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = watcher.watcher.Close()
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		watcher.Run(ctx)
+	}()
+
+	waitForWatch(t, watcher, dir)
+
+	// Trigger an event; handleEvent will block trying to deliver it.
+	file := filepath.Join(dir, "blocking.txt")
+	if err := os.WriteFile(file, []byte("data"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	// Give Run time to reach the blocked send before cancelling.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(watcherTestTimeout):
+		t.Fatal("Run did not return while blocked sending an event")
 	}
 }
 

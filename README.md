@@ -25,6 +25,7 @@ This is useful for:
 - supports time-based sync intervals
 - works with common sync tools such as `rsync`, `rclone`, and similar executables
 - provide desktop notifications using `notify-send`
+- graceful shutdown on `SIGINT` (Ctrl-C) and `SIGTERM`
 - lightweight Go-based implementation
 
 ## Installation
@@ -78,6 +79,18 @@ Typical workflow:
 1. choose a directory to watch
 2. configure the sync command to run when changes are detected
 3. optionally set a timer-based trigger to run periodic syncs even when files have not changed
+
+### Graceful shutdown
+
+`gosn` shuts down gracefully when it receives `SIGINT` (Ctrl-C) or `SIGTERM`:
+- the file watcher and the timer stop immediately
+- a command that is currently running is allowed to finish before `gosn` exits
+- pressing Ctrl-C a second time force-quits immediately, e.g. if the command hangs
+
+Note: when run interactively, Ctrl-C is delivered by the terminal to the whole
+foreground process group, so the command itself may still receive `SIGINT`
+directly. `SIGTERM` (e.g. `kill`, systemd) is only handled by `gosn`, which then
+waits for the command to complete.
 
 ## Example
 

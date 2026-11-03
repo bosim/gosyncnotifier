@@ -167,6 +167,33 @@ func TestTimerRunStopsOnContextCancellation(t *testing.T) {
 	}
 }
 
+// TestTimerRunStopsWhileBlockedOnSend verifies that Run returns on cancellation
+// even when it is blocked delivering an event to a receiver that stopped
+// consuming, as happens when main leaves its event loop during shutdown.
+func TestTimerRunStopsWhileBlockedOnSend(t *testing.T) {
+	syncChan := make(chan SyncEvent) // unbuffered, no consumer
+	timer := NewTimer(syncChan, 10*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		timer.Run(ctx)
+	}()
+
+	// Give the timer time to fire and block on the send.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(timerTestTimeout):
+		t.Fatal("Run did not return while blocked sending an event")
+	}
+}
+
 func receiveTimerEvent(t *testing.T, syncChan chan SyncEvent) SyncEvent {
 	t.Helper()
 
