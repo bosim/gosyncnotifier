@@ -29,17 +29,17 @@ func setupLogger(level string) {
 
 func main() {
 	timerInterval := flag.Int("timer-interval", 10, "Specifies the interval (in minutes) on how often the timer part should trigger, 0 is disabled")
-	watcherPath := flag.String("watcher-path", "", "The path that the notifier should monitor")
-	loglevel := flag.String("log-level", "info", "The minimum loglevel")
+	watcherPath := flag.String("watcher-path", "", "Directory to watch for file changes, empty disables the watcher")
+	loglevel := flag.String("log-level", "info", "The minimum log level (debug, info, warn, error)")
 	notifierEnabled := flag.Bool("notifier-enabled", true, "Whether desktop notifications are sent or not")
 	notifierExecutable := flag.String("notifier-exec", "notify-send", "Name or location of a notify-send compatible executable")
-	notifierPostCommand := flag.Bool("notifier-post-command", false, "Sent a low priority desktop notifications are command has completed")
+	notifierPostCommand := flag.Bool("notifier-post-command", false, "Send a low priority desktop notification after the command has completed")
 
 	flag.Usage = func() {
 		fmt.Printf("%s - run commands based on timer or file activity\n\n", programName)
 		fmt.Printf("Basic syntax:\n")
 		fmt.Printf("  %s <flags> -- <command>\n\n", programName)
-		fmt.Printf("Command will be run if either timer is triggered or new file activity occur\n\n")
+		fmt.Printf("The command is run when the timer triggers or file activity occurs\n\n")
 		fmt.Printf("The following flags are available:\n\n")
 
 		flag.PrintDefaults()
@@ -165,7 +165,7 @@ eventLoop:
 					notifier.Critical(fmt.Sprintf("Error running command: %v", err))
 				}
 			} else if *notifierPostCommand && ctx.Err() == nil {
-				notifier.Low("Command can successful")
+				notifier.Low("Command completed successfully")
 			}
 		}
 	}
