@@ -135,8 +135,6 @@ func main() {
 
 eventLoop:
 	for {
-		e := <-syncChannel
-
 		select {
 		case <-ctx.Done():
 			// A signal arrived. An in-flight command (runner.Run) still runs to
@@ -150,29 +148,30 @@ eventLoop:
 				break eventLoop
 			}
 
-		/* Event was generated from file modification */
-		if e.Type != internal.SyncEventNone && timer != nil {
-			timer.Reset()
-		}
-
-		if e.Type != internal.SyncEventNone {
-			slog.Info("Got event for file will run command",
-				"filename", e.Filename,
-				"type", e.Type.String(),
-				"origin", e.Origin.String())
-		} else {
-			slog.Info("Got event will run command",
-				"origin", e.Origin.String())
-		}
-
-		if err := runner.Run(); err != nil {
-			slog.Error("Error running command", "error", err)
-			if notifyErr := notifier.Critical(fmt.Sprintf("Error running command: %v", err)); notifyErr != nil {
-				slog.Warn("Error sending notification", "error", notifyErr)
+			/* Event was generated from file modification */
+			if e.Type != internal.SyncEventNone && timer != nil {
+				timer.Reset()
 			}
-		} else if *notifierPostCommand {
-			if notifyErr := notifier.Low("Command ran successfully"); notifyErr != nil {
-				slog.Warn("Error sending notification", "error", notifyErr)
+
+			if e.Type != internal.SyncEventNone {
+				slog.Info("Got event for file will run command",
+					"filename", e.Filename,
+					"type", e.Type.String(),
+					"origin", e.Origin.String())
+			} else {
+				slog.Info("Got event will run command",
+					"origin", e.Origin.String())
+			}
+
+			if err := runner.Run(); err != nil {
+				slog.Error("Error running command", "error", err)
+				if notifyErr := notifier.Critical(fmt.Sprintf("Error running command: %v", err)); notifyErr != nil {
+					slog.Warn("Error sending notification", "error", notifyErr)
+				}
+			} else if *notifierPostCommand {
+				if notifyErr := notifier.Low("Command ran successfully"); notifyErr != nil {
+					slog.Warn("Error sending notification", "error", notifyErr)
+				}
 			}
 		}
 	}
