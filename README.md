@@ -26,7 +26,7 @@ This is useful for:
 - triggers a configurable sync command, run as `<program> arg1 arg2 ...`
 - supports time-based sync intervals, which reset whenever file activity is observed
 - works with common sync tools such as `rsync`, `rclone`, and similar executables
-- provides desktop notifications using a `notify-send` compatible executable
+- provide desktop notifications via D-Bus, with an optional `notify-send`-compatible command backend
 - configurable log level (`debug`, `info`, `warn`, `error`)
 - graceful shutdown on `SIGINT` (Ctrl-C) and `SIGTERM`
 - lightweight Go-based implementation
@@ -74,10 +74,12 @@ The following flags are available:
 
   -log-level string
     	The minimum log level (debug, info, warn, error) (default "info")
+  -notifier-backend string
+    	Notification backend: "dbus" or "command" (default "dbus")
   -notifier-enabled
     	Whether desktop notifications are sent or not (default true)
   -notifier-exec string
-    	Name or location of a notify-send compatible executable (default "notify-send")
+    	Name or location of a notify-send compatible executable (command backend only) (default "notify-send")
   -notifier-post-command
     	Send a low priority desktop notification after the command has completed
   -timer-interval int
@@ -89,8 +91,25 @@ Example:
   gosn -timer-interval 0 -watcher-path /home/user/test -- rsync -avz -e ssh /home/user/test user@server:/dir
 ```
 
-The command is looked up on `$PATH` and run verbatim: no event context (such as
-the changed file name) is appended to the arguments.
+### Notification backends
+
+By default, notifications are sent directly through the freedesktop.org D-Bus
+notification service:
+
+```bash
+gosn -notifier-backend=dbus ...
+```
+
+If you prefer to use a `notify-send`-compatible executable instead, select the
+command backend and optionally point it at a different executable:
+
+```bash
+gosn -notifier-backend=command -notifier-exec=notify-send ...
+```
+
+The command backend is useful if you already depend on a specific
+`notify-send`-compatible wrapper or want to keep the previous command-based
+behavior.
 
 Typical workflow:
 
@@ -131,15 +150,18 @@ gosn -log-level error ...    # errors only
 
 ### Notifications
 
-Desktop notifications require a `notify-send` compatible executable (default
-`notify-send`, available on most Linux desktops).
+Desktop notifications are sent over the session D-Bus bus by default
+(`-notifier-backend=dbus`). With `-notifier-backend=command`, they go through a
+`notify-send`-compatible executable instead (default `notify-send`, available on
+most Linux desktops).
 
 - a critical notification is sent when the command fails
 - a low priority notification is sent after a successful run when `-notifier-post-command` is set
 - `-notifier-enabled=false` disables notifications entirely
 - `-notifier-exec` points to a different executable
 
-If the executable cannot be found, `gosn` logs a warning at startup and continues without sending notifications.
+If the `command` backend's executable cannot be found, `gosn` logs a warning at
+startup and continues without sending notifications.
 
 ### Graceful shutdown
 
@@ -167,6 +189,8 @@ waits for the command to complete.
 - Use a sync command that matches your environment and destination.
 - Keep the watched directory scope narrow to avoid unnecessary syncs.
 - If your sync tool is expensive or slow, consider batching changes or setting a reasonable interval.
+- The tool should cope with laptops being suspended which the basic `inotifywait` cannot cope with.
+- Direct D-Bus notifications require `DBUS_SESSION_BUS_ADDRESS` to point at a session bus. Use `-notifier-backend=command` if you prefer a `notify-send`-compatible wrapper.
 - Very high event rates can overflow the underlying inotify queue and drop events; the timer acts as a safety net for those cases.
 
 ## License

@@ -32,7 +32,8 @@ func main() {
 	watcherPath := flag.String("watcher-path", "", "Directory to watch for file changes, empty disables the watcher")
 	loglevel := flag.String("log-level", "info", "The minimum log level (debug, info, warn, error)")
 	notifierEnabled := flag.Bool("notifier-enabled", true, "Whether desktop notifications are sent or not")
-	notifierExecutable := flag.String("notifier-exec", "notify-send", "Name or location of a notify-send compatible executable")
+	notifierBackend := flag.String("notifier-backend", string(internal.NotifierBackendDBus), `Notification backend: "dbus" or "command"`)
+	notifierExecutable := flag.String("notifier-exec", "notify-send", "Name or location of a notify-send compatible executable (command backend only)")
 	notifierPostCommand := flag.Bool("notifier-post-command", false, "Send a low priority desktop notification after the command has completed")
 
 	flag.Usage = func() {
@@ -51,6 +52,12 @@ func main() {
 	flag.Parse()
 
 	setupLogger(*loglevel)
+
+	backend, err := internal.ParseNotifierBackend(*notifierBackend)
+	if err != nil {
+		slog.Error("Invalid notifier backend", "error", err)
+		os.Exit(1)
+	}
 
 	// Cancel the shared context on Ctrl-C (SIGINT) or SIGTERM so the watcher
 	// and timer goroutines can shut down gracefully.
@@ -85,22 +92,18 @@ func main() {
 			slog.Error("Unable to initialize watcher", "error", err)
 			os.Exit(1)
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			watcher.Run(ctx)
-		}()
+		})
 	} else {
 		slog.Warn("watcher-path not specified, disabling watcher")
 	}
 
 	if *timerInterval > 0 {
 		timer = internal.NewTimer(syncChannel, time.Duration(*timerInterval)*time.Minute)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			timer.Run(ctx)
-		}()
+		})
 	} else {
 		slog.Warn("timer-interval is 0, disabling timer")
 	}
@@ -110,10 +113,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	notifier, err := internal.NewNotifier(*notifierEnabled, *notifierExecutable)
+	notifier, err := internal.NewNotifier(*notifierEnabled, backend, *notifierExecutable)
 	if err != nil {
 		slog.Warn("Error creating notifier", "error", err)
 	}
+	defer notifier.Close()
 
 	runner, err := internal.NewRunner(cmd)
 	if err != nil {
@@ -162,10 +166,14 @@ eventLoop:
 					slog.Info("Command did not complete cleanly during shutdown", "error", err)
 				} else {
 					slog.Error("Error running command", "error", err)
-					notifier.Critical(fmt.Sprintf("Error running command: %v", err))
+					if notifyErr := notifier.Critical(fmt.Sprintf("Error running command: %v", err)); notifyErr != nil {
+						slog.Warn("Error sending notification", "error", notifyErr)
+					}
 				}
 			} else if *notifierPostCommand && ctx.Err() == nil {
-				notifier.Low("Command completed successfully")
+				if notifyErr := notifier.Low("Command ran successfully"); notifyErr != nil {
+					slog.Warn("Error sending notification", "error", notifyErr)
+				}
 			}
 		}
 	}

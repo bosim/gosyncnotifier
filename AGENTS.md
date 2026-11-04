@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-`gosyncnotifier`: A small Go utility that watches one or more directories for file changes and triggers a specified command when activity occurs or a timer elapses.
+`gosyncnotifier`: A small Go utility that watches a directory for file changes and triggers a specified command when activity occurs or a timer elapses.
 
 The project is intended for workflows like:
 - Syncing local files to a remote destination with `rsync`, `rclone`, or similar tools
@@ -14,8 +14,10 @@ The project is intended for workflows like:
 
 - `cmd/gosn/` — CLI entry point for the `gosn` binary
 - `internal/` — runtime logic for watchers, timers, runner execution, and notifications
-- `README.md` — usage, overview, and examples in HTML format
+- `internal/*_test.go` — unit tests for the watcher, timer, runner, syncevent, notifier, and util packages
+- `README.md` — usage, overview, and examples in Markdown format
 - `go.mod` / `go.sum` — Go module metadata and dependency lockfile
+- `.github/workflows/go.yml` — CI workflow running `go build -v ./...` and `go test -v ./...`
 - `.gitignore` — Git ignore rules
 
 ## Build and Validation
@@ -30,58 +32,84 @@ go build ./...
 go test ./...
 ```
 
-After building or installing, update `pkg/` to point to your local path if running from a custom location.
+CI (`.github/workflows/go.yml`) runs the same build and test commands on Go 1.26.
 
 ## Architecture Notes
 
-1. **File Watcher**: Monitors specified paths for filesystem events using:
-   - Linux/macOS: inotifywait (`fsnotify`)
-   - macOS: fswatch
+1. **File Watcher**: Monitors a single directory recursively for filesystem
+   events using `fsnotify` (inotify on Linux, kqueue/FSEvents on macOS). No
+   external watcher programs (`inotifywait`, `fswatch`) are used. Directories
+   created while running are watched automatically, removed ones are unwatched.
 
 2. **Timer Trigger**: Configurable interval (default 10 minutes) allows periodic execution independent of file activity. Timer uses Go's `time.Ticker` to stay responsive even when system is suspended.
 
 3. **Command Execution**: The runner parses user-provided command as `<program> arg1 arg2...` and executes it.
 
-4. **Notation System**: Desktop notifications use three levels via notify-send:
+4. **Notification System**: Desktop notifications use three levels via the freedesktop.org D-Bus notification service, or optionally via a `notify-send`-compatible executable:
    - `low`: Debug/debugging information (for developers)
    - `normal`: General notification (for users of the tool)
    - `critical`: Error/failure notification
 
-5. **Event Types**: File activity generates four event types in the `SyncEvent`:
-   - `OriginInit`: Initialization signal
-   - `SyncEventCreated`: New file detected
-   - `SyncEventDeleted`: File removed
-   - `SyncEventModified`: File content changed
+5. **Event Types**: A `SyncEvent` carries an event type and an origin, which are
+   two separate enums:
 
-6. **Execution Model**: Events flow from `syncChannel` through runner, notifying notifier to send desktop messages (if enabled).
+   `SyncEventType`:
+   - `SyncEventNone`: No file activity (e.g. timer or init trigger)
+   - `SyncEventCreated`: New file detected
+   - `SyncEventModified`: File content changed
+   - `SyncEventDeleted`: File removed
+
+   `OriginType`:
+   - `OriginNone`: Unset
+   - `OriginInit`: Initialization signal (runs the command once at startup)
+   - `OriginTimer`: Timer interval elapsed
+   - `OriginWatcher`: Filesystem event observed
+
+6. **Execution Model**: Events flow from `syncChannel` through runner, notifying notifier to send desktop messages (if enabled). The command runs once immediately at startup (`OriginInit`), file activity resets the timer interval, and commands run serially (one at a time, further events wait) with no debounce.
+
+7. **Shutdown**: A shared `context.Context` from `signal.NotifyContext` covers
+   SIGINT (Ctrl-C) and SIGTERM. On cancellation the watcher and timer stop
+   immediately, an in-flight command is allowed to finish, and no further
+   commands are started. Failure and post-command notifications are suppressed
+   during shutdown. After the first signal the default disposition is restored,
+   so a second Ctrl-C force-quits even if a command hangs.
 
 ## Notification Modes
 
 The notifier supports a three-level notification mechanism:
 
 ```go
-typeNotifier interface {
-    Low(message string)   // "Debug/Development info"
-    Normal(message string) // "User-facing notification"
-    Critical(message string) // "Error/Failure notification"
+type Notifier interface {
+    Low(message string) error      // "Debug/Development info"
+    Normal(message string) error   // "User-facing notification"
+    Critical(message string) error // "Error/Failure notification"
+    Close() error
 }
 ```
+
+The default `dbus` backend connects to the session bus once and reconnects if a
+notification fails. A failed startup connection is logged as a warning and is
+not fatal; later sends retry the connection. An unknown `-notifier-backend`
+value exits with an error at startup. The `command` backend runs a
+`notify-send`-compatible executable and is selected with
+`-notifier-backend=command`; if the executable is missing, notifications are
+disabled with a warning and the program keeps running.
 
 ## Usage Patterns
 
 ### Basic Configuration
 
-Use the `-watcher-path` flag to specify:
-- Where files are monitored
-- The sync command to execute automatically
+Use the `-watcher-path` flag to specify the directory to monitor for file
+changes. The command to execute is passed after `--`:
 
 ```bash
 gosn -watcher-path ~/projects/source -- rsync user@host:/dir/...
 ```
 
-### Multiple Watchers
+### Recursive Watching
 
-One or more watch paths can be configured. Files are watched recursively, including subdirectories.
+Only one watch path can be configured. Files are watched recursively,
+including subdirectories:
 
 ```bash
 gosn -watcher-path /var/log -- notify-send error "File changed in /var/log"
@@ -123,6 +151,20 @@ Send a secondary low-priority notification when command completes:
 gosn -notifier-post-command=true ...
 ```
 
+### Notification Backend
+
+Use the session D-Bus notification service (default):
+
+```bash
+gosn -notifier-backend=dbus ...
+```
+
+Use a `notify-send`-compatible executable instead:
+
+```bash
+gosn -notifier-backend=command -notifier-exec=notify-send ...
+```
+
 ## CLI Reference
 
 ### Commands and Options
@@ -133,7 +175,8 @@ gosn -notifier-post-command=true ...
 | `--watcher-path` (optional) | empty string | Path to monitor for events |
 | `--log-level` (flags) | info | Minimum log level |
 | `--notifier-enabled` | true | Enable desktop notifications |
-| `--notifier-exec` (default: notify-send) | `notify-send` | Executable name (must be available) |
+| `--notifier-backend` | `dbus` | Notification backend: `dbus` or `command` |
+| `--notifier-exec` (default: notify-send) | `notify-send` | Executable name for the `command` backend (must be available) |
 | `--notifier-post-command` | false | Send follow-up notification |
 
 ### CLI Syntax
@@ -148,7 +191,7 @@ Full options are printed with `gosn -help`.
 
 - **Watch Scope**: Limit watched paths to avoid excessive syncs on slow environments
 - **Suspension Handling**: Use Go ticker (`time.NewTicker`) instead of sleep loops for responsive suspends
-- **Notifier Dependency**: Requires executable installed system-wide or in PATH
+- **Notifier Dependency**: The `dbus` backend requires a reachable session bus (`DBUS_SESSION_BUS_ADDRESS`); the `command` backend requires a `notify-send`-compatible executable in PATH
 - **Execution Performance**: Command execution runs regardless of file changes unless explicitly disabled
 
 ## Development Workflow
