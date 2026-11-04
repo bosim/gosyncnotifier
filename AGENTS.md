@@ -82,9 +82,9 @@ CI (`.github/workflows/go.yml`) runs the same build and test commands on Go 1.26
    effects (adding/removing recursive watches) stay in the watcher and remain
    immediate. The forwarded event describes the whole burst: `SyncEvent.Events`
    lists the distinct affected files in first-appearance order with the latest
-   event type per file (nil when the debouncer was not involved). The main
-   loop logs the number of affected files as `files` and prints one debug
-   line per file.
+   event type per file (nil when the debouncer was not involved). For a
+   burst touching more than one file, the main loop logs the number of
+   affected files as `files` and prints one debug line per file.
 
 8. **Shutdown**: A shared `context.Context` from `signal.NotifyContext` covers
    SIGINT (Ctrl-C) and SIGTERM. On cancellation the watcher, debouncer, and

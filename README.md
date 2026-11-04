@@ -156,13 +156,14 @@ gosn -debounce-interval 0 ...    # disable: run once per file event
 ```
 
 The default quiet period is 1 second. The coalesced event still describes
-the whole burst: the log line reports `files` (how many distinct files were
-affected), and with `-log-level debug` each affected file is printed on its
-own line together with the event type it received. Directory watches are
-still registered and removed immediately while a burst is pending, and timer
-runs are never delayed by debouncing. If changes keep arriving without a
-quiet period (a long copy into the watched tree), the timer still triggers a
-run as a safety net.
+the whole burst: when a burst touches more than one file, the log line
+reports `files` (how many distinct files were affected) and, with
+`-log-level debug`, each affected file is printed on its own line together
+with the event type it received. Directory watches are still registered and
+removed immediately while a burst is pending, and timer runs are never
+delayed by debouncing. If changes keep arriving without a quiet period (a
+long copy into the watched tree), the timer still triggers a run as a
+safety net.
 
 ### Logging
 
