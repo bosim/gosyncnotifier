@@ -29,6 +29,7 @@ func setupLogger(level string) {
 
 func main() {
 	timerInterval := flag.Int("timer-interval", 10, "Specifies the interval (in minutes) on how often the timer part should trigger, 0 is disabled")
+	debounceInterval := flag.Duration("debounce-interval", time.Second, "Quiet period for coalescing file events before running the command, 0 is disabled")
 	watcherPath := flag.String("watcher-path", "", "Directory to watch for file changes, empty disables the watcher")
 	loglevel := flag.String("log-level", "info", "The minimum log level (debug, info, warn, error)")
 	notifierEnabled := flag.Bool("notifier-enabled", true, "Whether desktop notifications are sent or not")
@@ -87,10 +88,29 @@ func main() {
 
 	if len(*watcherPath) > 0 {
 		var err error
-		watcher, err = internal.NewWatcher(syncChannel, *watcherPath)
+
+		// Route the watcher through a debouncer so a burst of filesystem
+		// events coalesces into a single command run. With the interval at 0
+		// the watcher writes to the sync channel directly, exactly as before.
+		watcherInput := syncChannel
+		var debouncer *internal.Debouncer
+		if *debounceInterval > 0 {
+			debouncer = internal.NewDebouncer(syncChannel, *debounceInterval)
+			watcherInput = debouncer.In()
+		} else {
+			slog.Info("Debouncing disabled, forwarding file events immediately")
+		}
+
+		watcher, err = internal.NewWatcher(watcherInput, *watcherPath)
 		if err != nil {
 			slog.Error("Unable to initialize watcher", "error", err)
 			os.Exit(1)
+		}
+
+		if debouncer != nil {
+			wg.Go(func() {
+				debouncer.Run(ctx)
+			})
 		}
 		wg.Go(func() {
 			watcher.Run(ctx)
@@ -150,10 +170,16 @@ eventLoop:
 			}
 
 			if e.Type != internal.SyncEventNone {
-				slog.Info("Got event for file will run command",
+				attrs := []any{
 					"filename", e.Filename,
 					"type", e.Type.String(),
-					"origin", e.Origin.String())
+					"origin", e.Origin.String(),
+				}
+				if e.Count > 1 {
+					// A debounced burst of file events triggered this run.
+					attrs = append(attrs, "count", e.Count)
+				}
+				slog.Info("Got event for file will run command", attrs...)
 			} else {
 				slog.Info("Got event will run command",
 					"origin", e.Origin.String())

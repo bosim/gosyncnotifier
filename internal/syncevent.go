@@ -52,4 +52,8 @@ type SyncEvent struct {
 	Filename string
 	Type     SyncEventType
 	Origin   OriginType
+	// Count is the number of file events coalesced into this event by the
+	// debouncer (1 for a single forwarded event). Events that never pass
+	// through the debouncer (timer, init, debouncing disabled) leave it 0.
+	Count int
 }

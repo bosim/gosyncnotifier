@@ -23,6 +23,7 @@ This is useful for:
 ## Features
 
 - watches file system activity recursively (create, modify, delete)
+- coalesces bursts of file events and runs the command once after a quiet period (debouncing, default 1s)
 - triggers a configurable sync command, run as `<program> arg1 arg2 ...`
 - supports time-based sync intervals, which reset whenever file activity is observed
 - works with common sync tools such as `rsync`, `rclone`, and similar executables
@@ -72,6 +73,8 @@ The command is run when the timer triggers or file activity occurs
 
 The following flags are available:
 
+  -debounce-interval duration
+    	Quiet period for coalescing file events before running the command, 0 is disabled (default 1s)
   -log-level string
     	The minimum log level (debug, info, warn, error) (default "info")
   -notifier-backend string
@@ -140,6 +143,23 @@ gosn -watcher-path "" -timer-interval 30 -- rclone sync /home/user/data remote:b
 
 At least one of the watcher or the timer must be active, otherwise `gosn` exits with an error.
 
+### Debouncing file events
+
+Filesystem activity rarely arrives as a single event: an editor save or a
+`cp` into the watched directory typically produces a burst of create, write,
+and rename events. `gosn` coalesces each burst and runs the command once,
+after no new event arrived for the quiet period:
+
+```bash
+gosn -debounce-interval 2s ...   # wait for 2s of quiet before running
+gosn -debounce-interval 0 ...    # disable: run once per file event
+```
+
+The default quiet period is 1 second. Directory watches are still registered
+and removed immediately while a burst is pending, and timer runs are never
+delayed by debouncing. If changes keep arriving without a quiet period (a long
+copy into the watched tree), the timer still triggers a run as a safety net.
+
 ### Logging
 
 ```bash
@@ -181,7 +201,7 @@ waits for the command to complete.
 - **Startup run**: the command is executed once immediately at startup, before the first file event or timer tick.
 - **Recursive watching**: the whole tree below `-watcher-path` is watched; directories created while running are picked up automatically, removed ones are unwatched.
 - **Timer reset**: file activity resets the interval timer, so `-timer-interval` is the maximum idle time between periodic runs rather than a fixed schedule.
-- **One command at a time**: commands run serially and further events wait until the running command finishes. There is no debounce, so a burst of changes can trigger several consecutive runs.
+- **One command at a time**: commands run serially and further events wait until the running command finishes. A burst of changes is debounced: it triggers a single run once the filesystem has been quiet for `-debounce-interval` (default 1s), so consecutive runs only happen when activity resumes after the quiet period.
 - **Suspend**: the timer is based on the wall clock and fires shortly after the system wakes up. File changes made while the system was suspended are not reported by the file watcher, so keep the timer enabled to catch up after waking.
 
 ## Notes

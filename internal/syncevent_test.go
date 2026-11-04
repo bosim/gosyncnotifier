@@ -69,6 +69,9 @@ func TestSyncEventZeroValue(t *testing.T) {
 	if event.Origin != OriginNone {
 		t.Errorf("Origin = %v, want %v", event.Origin, OriginNone)
 	}
+	if event.Count != 0 {
+		t.Errorf("Count = %d, want 0", event.Count)
+	}
 }
 
 // TestEventTypesAreFormatters ensures the types can be used anywhere a

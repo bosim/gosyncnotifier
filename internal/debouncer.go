@@ -1,0 +1,164 @@
+package internal
+
+import (
+	"context"
+	"log/slog"
+	"time"
+)
+
+// debouncerInputBuffer absorbs filesystem event bursts so the watcher can keep
+// draining the underlying inotify queue while a burst is being coalesced.
+const debouncerInputBuffer = 64
+
+// Debouncer coalesces a burst of file events into a single SyncEvent that is
+// forwarded only after no further event arrived for the configured quiet
+// period. This keeps a burst of filesystem activity (an editor save, a copy
+// into the watched tree, ...) from triggering one command run per event.
+//
+// Only the watcher's events pass through the debouncer; timer and init events
+// are sent to the sync channel directly.
+//
+// Run holds all of its mutable state in local variables and is therefore safe
+// for a single goroutine without additional locking.
+type Debouncer struct {
+	in    chan SyncEvent
+	out   chan SyncEvent
+	quiet time.Duration
+}
+
+// NewDebouncer creates a Debouncer that reads raw watcher events from its own
+// input channel (exposed by In and typically handed to the Watcher) and
+// forwards coalesced events to out once quiet has elapsed without further
+// activity. A non-positive quiet period disables coalescing: Run then
+// forwards every event unchanged.
+func NewDebouncer(out chan SyncEvent, quiet time.Duration) *Debouncer {
+	return &Debouncer{
+		in:    make(chan SyncEvent, debouncerInputBuffer),
+		out:   out,
+		quiet: quiet,
+	}
+}
+
+// In returns the channel raw watcher events must be written to.
+func (d *Debouncer) In() chan SyncEvent {
+	return d.in
+}
+
+// Run coalesces incoming events until the quiet period elapses, then forwards
+// the merged event. It returns when ctx is cancelled or the input channel is
+// closed; a burst still pending when ctx is cancelled is dropped, while a
+// closed input flushes the pending burst first (no further events are coming).
+func (d *Debouncer) Run(ctx context.Context) {
+	if d.quiet <= 0 {
+		d.runPassthrough(ctx)
+		return
+	}
+
+	timer := time.NewTimer(d.quiet)
+	stopTimer(timer) // start idle, no expiry armed until the first event
+	defer timer.Stop()
+
+	// timerC is nil while no burst is in progress, which parks that select
+	// case. It mirrors the Go idiom for arming a timer inside a select loop.
+	var timerC <-chan time.Time
+	var pending *SyncEvent
+
+	for {
+		select {
+		case ev, ok := <-d.in:
+			if !ok {
+				// Input closed: the watcher is gone, deliver what we have
+				// instead of waiting for a quiet period that may never come.
+				if pending != nil && !d.send(ctx, *pending) {
+					return
+				}
+				return
+			}
+
+			pending = mergeEvent(pending, ev)
+			// Debounce: every new event restarts the quiet clock, so nothing
+			// is forwarded while the filesystem keeps changing.
+			stopTimer(timer)
+			timer.Reset(d.quiet)
+			timerC = timer.C
+
+		case <-timerC:
+			// The filesystem went quiet, flush the coalesced burst.
+			timerC = nil
+			ev := *pending
+			pending = nil
+			slog.Debug("Forwarded debounced file events",
+				"filename", ev.Filename,
+				"type", ev.Type.String(),
+				"count", ev.Count)
+			if !d.send(ctx, ev) {
+				return
+			}
+
+		case <-ctx.Done():
+			if pending != nil {
+				slog.Debug("Dropping debounced file events during shutdown",
+					"count", pending.Count)
+			}
+			return
+		}
+	}
+}
+
+// runPassthrough forwards events unchanged when debouncing is disabled,
+// preserving the pre-debouncer behaviour exactly (including event order and
+// the zero Count field).
+func (d *Debouncer) runPassthrough(ctx context.Context) {
+	for {
+		select {
+		case ev, ok := <-d.in:
+			if !ok {
+				return
+			}
+			if !d.send(ctx, ev) {
+				return
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// send forwards an event to the output channel, giving up if the context is
+// cancelled first. This keeps Run responsive during shutdown even when the
+// receiver has stopped consuming events. It returns false when the send was
+// abandoned due to cancellation.
+func (d *Debouncer) send(ctx context.Context, ev SyncEvent) bool {
+	select {
+	case d.out <- ev:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// mergeEvent folds ev into the pending burst event, creating it for the first
+// event of a burst. The most recent filename and type win so the log reflects
+// the latest change; Count records how many events were coalesced.
+func mergeEvent(pending *SyncEvent, ev SyncEvent) *SyncEvent {
+	if pending == nil {
+		ev.Count = 1
+		return &ev
+	}
+
+	pending.Count++
+	pending.Filename = ev.Filename
+	pending.Type = ev.Type
+	return pending
+}
+
+// stopTimer stops t and drains a possible stale expiry, so a subsequent Reset
+// cannot fire immediately.
+func stopTimer(t *time.Timer) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+}
