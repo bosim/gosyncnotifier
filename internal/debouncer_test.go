@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -64,44 +65,54 @@ func TestNewDebouncer(t *testing.T) {
 	}
 }
 
-func TestMergeEvent(t *testing.T) {
-	first := SyncEvent{
-		Filename: "first.txt",
-		Type:     SyncEventCreated,
-		Origin:   OriginWatcher,
+// TestBurstDeduplicatesPerFile verifies the accumulator deduplicates per file
+// in first-appearance order with the latest type winning, and that take()
+// resets it for the next window.
+func TestBurstDeduplicatesPerFile(t *testing.T) {
+	var b burst
+
+	if b.pending() {
+		t.Fatal("fresh burst reports pending events")
 	}
 
-	merged := mergeEvent(nil, first)
-	if merged.Count != 1 {
-		t.Errorf("first merge Count = %d, want 1", merged.Count)
+	// a(created) a(modified) b(deleted) a(modified)
+	b.add(SyncEvent{Filename: "a.txt", Type: SyncEventCreated, Origin: OriginWatcher})
+	b.add(SyncEvent{Filename: "a.txt", Type: SyncEventModified, Origin: OriginWatcher})
+	b.add(SyncEvent{Filename: "b.txt", Type: SyncEventDeleted, Origin: OriginWatcher})
+	b.add(SyncEvent{Filename: "a.txt", Type: SyncEventModified, Origin: OriginWatcher})
+
+	if !b.pending() {
+		t.Fatal("burst with events reports no pending events")
 	}
-	if merged.Filename != "first.txt" || merged.Type != SyncEventCreated {
-		t.Errorf("first merge = %+v, want first.txt/created", merged)
+	wantEvents := []FileEvent{
+		{Filename: "a.txt", Type: SyncEventModified},
+		{Filename: "b.txt", Type: SyncEventDeleted},
+	}
+	if !reflect.DeepEqual(b.event.Events, wantEvents) {
+		t.Errorf("Events = %+v, want %+v", b.event.Events, wantEvents)
+	}
+	if b.event.Filename != "a.txt" || b.event.Type != SyncEventModified {
+		t.Errorf("most recent = %q/%v, want a.txt/modified", b.event.Filename, b.event.Type)
+	}
+	if b.event.Origin != OriginWatcher {
+		t.Errorf("Origin = %v, want %v", b.event.Origin, OriginWatcher)
 	}
 
-	second := SyncEvent{
-		Filename: "second.txt",
-		Type:     SyncEventModified,
-		Origin:   OriginWatcher,
+	ev := b.take()
+	if !reflect.DeepEqual(ev.Events, wantEvents) {
+		t.Errorf("take() = %+v, want %+v", ev.Events, wantEvents)
 	}
-	merged = mergeEvent(merged, second)
-	if merged.Count != 2 {
-		t.Errorf("second merge Count = %d, want 2", merged.Count)
+	if b.pending() {
+		t.Error("burst still pending after take()")
 	}
-	if merged.Filename != "second.txt" {
-		t.Errorf("Filename = %q, want the most recent file %q", merged.Filename, "second.txt")
-	}
-	if merged.Type != SyncEventModified {
-		t.Errorf("Type = %v, want the most recent type %v", merged.Type, SyncEventModified)
-	}
-	if merged.Origin != OriginWatcher {
-		t.Errorf("Origin = %v, want %v", merged.Origin, OriginWatcher)
+	if b.event.Events != nil {
+		t.Errorf("burst not reset after take(): %+v", b.event)
 	}
 }
 
 // TestDebouncerCoalescesBurst verifies that a rapid burst of events results in
-// exactly one forwarded event carrying the merged count and the most recent
-// filename.
+// exactly one forwarded event whose Events deduplicates per file in
+// first-appearance order with the latest type.
 func TestDebouncerCoalescesBurst(t *testing.T) {
 	quiet := 100 * time.Millisecond
 	out := make(chan SyncEvent, 4)
@@ -109,26 +120,33 @@ func TestDebouncerCoalescesBurst(t *testing.T) {
 
 	startDebouncer(t, d, t.Context())
 
-	for i := range 5 {
-		d.In() <- SyncEvent{
-			Filename: filepath.Join("dir", "file"+string(rune('a'+i))),
-			Type:     SyncEventModified,
-			Origin:   OriginWatcher,
-		}
+	for _, ev := range []SyncEvent{
+		{Filename: "a.txt", Type: SyncEventCreated, Origin: OriginWatcher},
+		{Filename: "b.txt", Type: SyncEventModified, Origin: OriginWatcher},
+		{Filename: "a.txt", Type: SyncEventModified, Origin: OriginWatcher},
+		{Filename: "c.txt", Type: SyncEventCreated, Origin: OriginWatcher},
+		{Filename: "b.txt", Type: SyncEventModified, Origin: OriginWatcher},
+	} {
+		d.In() <- ev
 	}
 
 	event := receiveEvent(t, out)
-	if event.Count != 5 {
-		t.Errorf("Count = %d, want 5 coalesced events", event.Count)
-	}
-	if want := filepath.Join("dir", "filee"); event.Filename != want {
-		t.Errorf("Filename = %q, want the most recent file %q", event.Filename, want)
+	if event.Filename != "b.txt" {
+		t.Errorf("Filename = %q, want the most recent file %q", event.Filename, "b.txt")
 	}
 	if event.Type != SyncEventModified {
 		t.Errorf("Type = %v, want %v", event.Type, SyncEventModified)
 	}
 	if event.Origin != OriginWatcher {
 		t.Errorf("Origin = %v, want %v", event.Origin, OriginWatcher)
+	}
+	wantEvents := []FileEvent{
+		{Filename: "a.txt", Type: SyncEventModified},
+		{Filename: "b.txt", Type: SyncEventModified},
+		{Filename: "c.txt", Type: SyncEventCreated},
+	}
+	if !reflect.DeepEqual(event.Events, wantEvents) {
+		t.Errorf("Events = %+v, want %+v", event.Events, wantEvents)
 	}
 
 	// The burst must not produce any follow-up events.
@@ -146,14 +164,20 @@ func TestDebouncerSeparatesBursts(t *testing.T) {
 
 	d.In() <- SyncEvent{Filename: "a.txt", Type: SyncEventCreated, Origin: OriginWatcher}
 	first := receiveEvent(t, out)
-	if first.Filename != "a.txt" || first.Count != 1 {
-		t.Errorf("first event = %+v, want a.txt with Count 1", first)
+	if first.Filename != "a.txt" {
+		t.Errorf("first event = %+v, want a.txt", first)
+	}
+	if len(first.Events) != 1 || first.Events[0].Filename != "a.txt" {
+		t.Errorf("first event Events = %+v, want a single a.txt entry", first.Events)
 	}
 
 	d.In() <- SyncEvent{Filename: "b.txt", Type: SyncEventDeleted, Origin: OriginWatcher}
 	second := receiveEvent(t, out)
-	if second.Filename != "b.txt" || second.Count != 1 {
-		t.Errorf("second event = %+v, want b.txt with Count 1", second)
+	if second.Filename != "b.txt" {
+		t.Errorf("second event = %+v, want b.txt", second)
+	}
+	if len(second.Events) != 1 || second.Events[0].Filename != "b.txt" {
+		t.Errorf("second event Events = %+v, want a single b.txt entry", second.Events)
 	}
 }
 
@@ -209,7 +233,7 @@ func TestDebouncerCancelWhileBlockedOnSend(t *testing.T) {
 }
 
 // TestDebouncerPassthroughWhenDisabled verifies that a non-positive quiet
-// period forwards every event unchanged, preserving order and the zero Count.
+// period forwards every event unchanged, preserving order and nil Events.
 func TestDebouncerPassthroughWhenDisabled(t *testing.T) {
 	out := make(chan SyncEvent, 4)
 	d := NewDebouncer(out, 0)
@@ -226,8 +250,8 @@ func TestDebouncerPassthroughWhenDisabled(t *testing.T) {
 		if event.Filename != name {
 			t.Errorf("Filename = %q, want %q", event.Filename, name)
 		}
-		if event.Count != 0 {
-			t.Errorf("Count = %d, want 0 when debouncing is disabled", event.Count)
+		if event.Events != nil {
+			t.Errorf("Events = %+v, want nil when debouncing is disabled", event.Events)
 		}
 	}
 }
@@ -250,8 +274,11 @@ func TestDebouncerInputClosedFlushesPending(t *testing.T) {
 	close(d.In())
 
 	event := receiveEvent(t, out)
-	if event.Filename != "flushed.txt" || event.Count != 1 {
-		t.Errorf("event = %+v, want flushed.txt with Count 1", event)
+	if event.Filename != "flushed.txt" {
+		t.Errorf("event = %+v, want flushed.txt", event)
+	}
+	if len(event.Events) != 1 || event.Events[0].Filename != "flushed.txt" {
+		t.Errorf("event Events = %+v, want a single flushed.txt entry", event.Events)
 	}
 	waitForRunExit(t, done)
 }
@@ -310,8 +337,10 @@ func TestWatcherWithDebouncerCoalescesBurst(t *testing.T) {
 	if event.Origin != OriginWatcher {
 		t.Errorf("Origin = %v, want %v", event.Origin, OriginWatcher)
 	}
-	if event.Count < 1 {
-		t.Errorf("Count = %d, want at least 1", event.Count)
+	// Every event of the burst was for the same file, so the deduplicated
+	// list must contain exactly that one entry.
+	if len(event.Events) != 1 || event.Events[0].Filename != file {
+		t.Errorf("Events = %+v, want a single entry for %q", event.Events, file)
 	}
 
 	// The whole burst must collapse into that single event.

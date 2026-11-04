@@ -65,6 +65,11 @@ CI (`.github/workflows/go.yml`) runs the same build and test commands on Go 1.26
    - `OriginTimer`: Timer interval elapsed
    - `OriginWatcher`: Filesystem event observed
 
+   A `SyncEvent` additionally carries `Events` (the affected files as
+   `FileEvent{Filename, Type}`, deduplicated in first-appearance order with
+   the latest type per file; nil when the event never passed through the
+   debouncer).
+
 6. **Execution Model**: Events flow from `syncChannel` through runner, notifying notifier to send desktop messages (if enabled). The command runs once immediately at startup (`OriginInit`), file activity resets the timer interval, and commands run serially (one at a time, further events wait); watcher event bursts are debounced before reaching `syncChannel` (see Event Debouncing).
 
 7. **Event Debouncing**: A burst of filesystem events (an editor save, a copy
@@ -75,8 +80,11 @@ CI (`.github/workflows/go.yml`) runs the same build and test commands on Go 1.26
    Flow: `watcher → debouncer → syncChannel`; timer and init events go to
    `syncChannel` directly and are never delayed. Watch registration side
    effects (adding/removing recursive watches) stay in the watcher and remain
-   immediate. `SyncEvent.Count` records how many events were coalesced (1 for
-   a single forwarded event, 0 when the debouncer was not involved).
+   immediate. The forwarded event describes the whole burst: `SyncEvent.Events`
+   lists the distinct affected files in first-appearance order with the latest
+   event type per file (nil when the debouncer was not involved). The main
+   loop logs the number of affected files as `files` and prints one debug
+   line per file.
 
 8. **Shutdown**: A shared `context.Context` from `signal.NotifyContext` covers
    SIGINT (Ctrl-C) and SIGTERM. On cancellation the watcher, debouncer, and

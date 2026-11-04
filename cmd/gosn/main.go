@@ -175,11 +175,19 @@ eventLoop:
 					"type", e.Type.String(),
 					"origin", e.Origin.String(),
 				}
-				if e.Count > 1 {
+				if len(e.Events) > 1 {
 					// A debounced burst of file events triggered this run.
-					attrs = append(attrs, "count", e.Count)
+					attrs = append(attrs, "files", len(e.Events))
 				}
 				slog.Info("Got event for file will run command", attrs...)
+				if len(e.Events) > 1 {
+					// One log line per affected file of the burst.
+					for _, fe := range e.Events {
+						slog.Debug("File changed in burst",
+							"filename", fe.Filename,
+							"type", fe.Type.String())
+					}
+				}
 			} else {
 				slog.Info("Got event will run command",
 					"origin", e.Origin.String())

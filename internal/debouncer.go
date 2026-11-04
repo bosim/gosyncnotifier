@@ -13,7 +13,9 @@ const debouncerInputBuffer = 64
 // Debouncer coalesces a burst of file events into a single SyncEvent that is
 // forwarded only after no further event arrived for the configured quiet
 // period. This keeps a burst of filesystem activity (an editor save, a copy
-// into the watched tree, ...) from triggering one command run per event.
+// into the watched tree, ...) from triggering one command run per event. The
+// forwarded event still describes the whole burst: Events lists every
+// affected file (deduplicated).
 //
 // Only the watcher's events pass through the debouncer; timer and init events
 // are sent to the sync channel directly.
@@ -61,7 +63,7 @@ func (d *Debouncer) Run(ctx context.Context) {
 	// timerC is nil while no burst is in progress, which parks that select
 	// case. It mirrors the Go idiom for arming a timer inside a select loop.
 	var timerC <-chan time.Time
-	var pending *SyncEvent
+	var b burst
 
 	for {
 		select {
@@ -69,13 +71,13 @@ func (d *Debouncer) Run(ctx context.Context) {
 			if !ok {
 				// Input closed: the watcher is gone, deliver what we have
 				// instead of waiting for a quiet period that may never come.
-				if pending != nil && !d.send(ctx, *pending) {
+				if b.pending() && !d.send(ctx, b.take()) {
 					return
 				}
 				return
 			}
 
-			pending = mergeEvent(pending, ev)
+			b.add(ev)
 			// Debounce: every new event restarts the quiet clock, so nothing
 			// is forwarded while the filesystem keeps changing.
 			stopTimer(timer)
@@ -85,20 +87,19 @@ func (d *Debouncer) Run(ctx context.Context) {
 		case <-timerC:
 			// The filesystem went quiet, flush the coalesced burst.
 			timerC = nil
-			ev := *pending
-			pending = nil
+			ev := b.take()
 			slog.Debug("Forwarded debounced file events",
 				"filename", ev.Filename,
 				"type", ev.Type.String(),
-				"count", ev.Count)
+				"files", len(ev.Events))
 			if !d.send(ctx, ev) {
 				return
 			}
 
 		case <-ctx.Done():
-			if pending != nil {
+			if b.pending() {
 				slog.Debug("Dropping debounced file events during shutdown",
-					"count", pending.Count)
+					"files", len(b.event.Events))
 			}
 			return
 		}
@@ -107,7 +108,7 @@ func (d *Debouncer) Run(ctx context.Context) {
 
 // runPassthrough forwards events unchanged when debouncing is disabled,
 // preserving the pre-debouncer behaviour exactly (including event order and
-// the zero Count field).
+// the nil Events field).
 func (d *Debouncer) runPassthrough(ctx context.Context) {
 	for {
 		select {
@@ -137,19 +138,53 @@ func (d *Debouncer) send(ctx context.Context, ev SyncEvent) bool {
 	}
 }
 
-// mergeEvent folds ev into the pending burst event, creating it for the first
-// event of a burst. The most recent filename and type win so the log reflects
-// the latest change; Count records how many events were coalesced.
-func mergeEvent(pending *SyncEvent, ev SyncEvent) *SyncEvent {
-	if pending == nil {
-		ev.Count = 1
-		return &ev
+// burst accumulates the file events of one debounce window into a single
+// SyncEvent: Events deduplicates per file in first-appearance order with the
+// latest event type winning.
+//
+// The burst lives entirely inside Debouncer's Run loop, so it needs no
+// locking; the index map keeps deduplication linear in the burst size.
+type burst struct {
+	event SyncEvent
+	index map[string]int // filename → position in event.Events
+}
+
+// add folds one watcher event into the burst.
+func (b *burst) add(ev SyncEvent) {
+	if b.index == nil {
+		// First event of the window: start the index and record the origin.
+		b.index = make(map[string]int)
+		b.event.Origin = ev.Origin
 	}
 
-	pending.Count++
-	pending.Filename = ev.Filename
-	pending.Type = ev.Type
-	return pending
+	b.event.Filename = ev.Filename // keep the most recent file for the log
+	b.event.Type = ev.Type
+
+	if i, ok := b.index[ev.Filename]; ok {
+		// Known file: latest type wins, first-appearance position is kept.
+		b.event.Events[i].Type = ev.Type
+		return
+	}
+
+	b.event.Events = append(b.event.Events, FileEvent{
+		Filename: ev.Filename,
+		Type:     ev.Type,
+	})
+	b.index[ev.Filename] = len(b.event.Events) - 1
+}
+
+// pending reports whether the burst holds any events.
+func (b *burst) pending() bool {
+	return b.event.Events != nil
+}
+
+// take returns the accumulated event and resets the burst for the next
+// debounce window.
+func (b *burst) take() SyncEvent {
+	ev := b.event
+	b.event = SyncEvent{}
+	b.index = nil
+	return ev
 }
 
 // stopTimer stops t and drains a possible stale expiry, so a subsequent Reset
