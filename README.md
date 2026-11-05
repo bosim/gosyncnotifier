@@ -27,7 +27,8 @@ This is useful for:
 - triggers a configurable sync command, run as `<program> arg1 arg2 ...`
 - supports time-based sync intervals, which reset whenever file activity is observed
 - works with common sync tools such as `rsync`, `rclone`, and similar executables
-- provide desktop notifications via D-Bus, with an optional `notify-send`-compatible command backend
+- provides desktop notifications via D-Bus, with an optional `notify-send`-compatible command backend
+- ships a companion `gosnctl` binary talking to `gosn` over a Unix control socket: status, pause/resume (optionally timed), trigger a run
 - configurable log level (`debug`, `info`, `warn`, `error`)
 - graceful shutdown on `SIGINT` (Ctrl-C) and `SIGTERM`
 - lightweight Go-based implementation
@@ -42,12 +43,14 @@ From source:
 git clone https://github.com/bosim/gosyncnotifier.git
 cd gosyncnotifier
 go build -o gosn ./cmd/gosn
+go build -o gosnctl ./cmd/gosnctl
 ```
 
-Or install the binary with Go:
+Or install the binaries with Go:
 
 ```bash
 go install github.com/bosim/gosyncnotifier/cmd/gosn@latest
+go install github.com/bosim/gosyncnotifier/cmd/gosnctl@latest
 ```
 
 The binary is installed into `$(go env GOPATH)/bin` (usually `~/go/bin`), which
@@ -73,6 +76,8 @@ The command is run when the timer triggers or file activity occurs
 
 The following flags are available:
 
+  -control-socket string
+    	Unix socket gosnctl uses to query and control this instance, empty disables the control socket (default "/run/user/1000/gosn.sock")
   -debounce-interval duration
     	Quiet period for coalescing file events before running the command, 0 is disabled (default 1s)
   -log-level string
@@ -187,6 +192,74 @@ most Linux desktops).
 
 If the `command` backend's executable cannot be found, `gosn` logs a warning at
 startup and continues without sending notifications.
+
+### Controlling gosn with gosnctl
+
+`gosn` listens on a Unix control socket so a second binary, `gosnctl`, can
+inspect and control the running instance. Build it next to `gosn`:
+
+```bash
+go build -o gosnctl ./cmd/gosnctl
+```
+
+By default the socket is `$XDG_RUNTIME_DIR/gosn.sock` — on a systemd Linux
+system that is `/run/user/<uid>/gosn.sock` — created with permissions `0600`
+so only the owner can connect. Move it with `-control-socket` on `gosn` (an
+empty value disables it) and point `gosnctl` at non-default paths with
+`-socket`. Only one instance can own a given socket: if a second `gosn` starts
+on the same path it logs a warning and runs without a control socket, and a
+stale socket file left behind by a killed instance is removed automatically on
+the next start.
+
+Commands:
+
+| Command | Description |
+|---------|-------------|
+| `gosnctl status` | Show sync state, last sync, last event, next timer run and configuration |
+| `gosnctl -json status` | The same status as machine-readable JSON |
+| `gosnctl pause [duration]` | Pause syncs until `gosnctl resume`; with a Go duration such as `30m` it auto-resumes after that period |
+| `gosnctl resume` | End the pause and queue a catch-up run |
+| `gosnctl trigger` | Queue a sync run now; rejected while paused |
+
+```bash
+gosnctl status
+gosnctl -json status | jq .last_sync
+gosnctl pause 30m         # e.g. while on a metered connection
+gosnctl resume
+gosnctl trigger
+```
+
+Example output:
+
+```
+state:         running
+run:           idle
+last sync:     2026-11-05 19:21:45 (ok, 1.8s, origin watcher)
+last event:    2026-11-05 19:21:43 (modified via watcher, /home/user/test/a.txt)
+next timer:    2026-11-05 19:31:45 (in 9m58s)
+started:       2026-11-05 19:00:00 (uptime 21m45s)
+watcher:       /home/user/test
+timer:         10m
+debounce:      1s
+command:       rsync -avz -e ssh /home/user/test user@server:/dir
+```
+
+Pause semantics:
+
+- while paused, timer and file events keep being observed and recorded
+  (visible as `last event`, and they keep resetting the timer interval), but
+  no command runs
+- `gosnctl resume` queues a catch-up run immediately, and so does the
+  automatic resume of a timed pause — both behave like the run `gosn` performs
+  at startup
+- `gosnctl trigger` is refused while paused, so an explicit run cannot bypass
+  a deliberate pause
+- a command already in flight when the pause arrives is not interrupted; its
+  result still appears as `last sync`
+
+If `gosnctl` reports it cannot connect (`is gosn running?`), check that `gosn`
+is running with the control socket enabled and that `-socket` matches its
+`-control-socket` path.
 
 ### Graceful shutdown
 

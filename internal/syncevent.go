@@ -31,6 +31,9 @@ const (
 	OriginInit
 	OriginTimer
 	OriginWatcher
+	// OriginControl marks a run requested explicitly through the control
+	// socket (gosnctl trigger).
+	OriginControl
 )
 
 func (o OriginType) String() string {
@@ -43,6 +46,8 @@ func (o OriginType) String() string {
 		return "timer"
 	case OriginWatcher:
 		return "watcher"
+	case OriginControl:
+		return "control"
 	}
 
 	return "unknown"
