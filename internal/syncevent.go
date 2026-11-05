@@ -48,8 +48,18 @@ func (o OriginType) String() string {
 	return "unknown"
 }
 
+// FileEvent describes what happened to one file during a debounced burst.
+type FileEvent struct {
+	Filename string
+	Type     SyncEventType
+}
+
 type SyncEvent struct {
 	Filename string
 	Type     SyncEventType
 	Origin   OriginType
+	// Events lists the distinct files affected by a debounced burst, in
+	// first-appearance order with the latest event type per file. It is nil
+	// when the event never passed through the debouncer.
+	Events []FileEvent
 }

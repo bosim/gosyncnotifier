@@ -13,8 +13,8 @@ The project is intended for workflows like:
 ## Repository Layout
 
 - `cmd/gosn/` — CLI entry point for the `gosn` binary
-- `internal/` — runtime logic for watchers, timers, runner execution, and notifications
-- `internal/*_test.go` — unit tests for the watcher, timer, runner, syncevent, notifier, and util packages
+- `internal/` — runtime logic for watchers, event debouncing, timers, runner execution, and notifications
+- `internal/*_test.go` — unit tests for the watcher, debouncer, timer, runner, syncevent, notifier, and util packages
 - `README.md` — usage, overview, and examples in Markdown format
 - `go.mod` / `go.sum` — Go module metadata and dependency lockfile
 - `.github/workflows/go.yml` — CI workflow running `go build -v ./...` and `go test -v ./...`
@@ -65,12 +65,32 @@ CI (`.github/workflows/go.yml`) runs the same build and test commands on Go 1.26
    - `OriginTimer`: Timer interval elapsed
    - `OriginWatcher`: Filesystem event observed
 
-6. **Execution Model**: Events flow from `syncChannel` through runner, notifying notifier to send desktop messages (if enabled). The command runs once immediately at startup (`OriginInit`), file activity resets the timer interval, and commands run serially (one at a time, further events wait) with no debounce.
+   A `SyncEvent` additionally carries `Events` (the affected files as
+   `FileEvent{Filename, Type}`, deduplicated in first-appearance order with
+   the latest type per file; nil when the event never passed through the
+   debouncer).
 
-7. **Shutdown**: A shared `context.Context` from `signal.NotifyContext` covers
-   SIGINT (Ctrl-C) and SIGTERM. On cancellation the watcher and timer stop
-   immediately, an in-flight command is allowed to finish, and no further
-   commands are started. Failure and post-command notifications are suppressed
+6. **Execution Model**: Events flow from `syncChannel` through runner, notifying notifier to send desktop messages (if enabled). The command runs once immediately at startup (`OriginInit`), file activity resets the timer interval, and commands run serially (one at a time, further events wait); watcher event bursts are debounced before reaching `syncChannel` (see Event Debouncing).
+
+7. **Event Debouncing**: A burst of filesystem events (an editor save, a copy
+   into the watched tree) is coalesced by the `Debouncer`
+   (`internal/debouncer.go`) into a single `SyncEvent`, forwarded only after
+   the filesystem has been quiet for `-debounce-interval` (default 1s; 0
+   disables debouncing and the watcher writes to `syncChannel` directly).
+   Flow: `watcher → debouncer → syncChannel`; timer and init events go to
+   `syncChannel` directly and are never delayed. Watch registration side
+   effects (adding/removing recursive watches) stay in the watcher and remain
+   immediate. The forwarded event describes the whole burst: `SyncEvent.Events`
+   lists the distinct affected files in first-appearance order with the latest
+   event type per file (nil when the debouncer was not involved). For a
+   burst touching more than one file, the main loop logs the number of
+   affected files as `files` and prints one debug line per file.
+
+8. **Shutdown**: A shared `context.Context` from `signal.NotifyContext` covers
+   SIGINT (Ctrl-C) and SIGTERM. On cancellation the watcher, debouncer, and
+   timer stop immediately, a pending debounced burst is dropped, an
+   in-flight command is allowed to finish, and no further commands are
+   started. Failure and post-command notifications are suppressed
    during shutdown. After the first signal the default disposition is restored,
    so a second Ctrl-C force-quits even if a command hangs.
 
@@ -125,6 +145,16 @@ gosn -timer-interval 10 -watcher-path "" -- rsync ...
 
 Use empty string or omit watcher entirely to poll the command periodically.
 
+### Debouncing File Events
+
+Coalesce a burst of filesystem events into a single command run once the
+watched directory has been quiet for the configured period (default 1s):
+
+```bash
+gosn -debounce-interval 2s ...   # wait for 2s of quiet before running
+gosn -debounce-interval 0 ...    # disable: run once per file event
+```
+
 ### Silent Operation (Full Polling Without Notifications)
 
 Disable notifications while still running:
@@ -172,6 +202,7 @@ gosn -notifier-backend=command -notifier-exec=notify-send ...
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--timer-interval` (flags) | 10 minutes | Timer triggers; 0 disables timer |
+| `--debounce-interval` (flags) | 1s | Quiet period for coalescing file events before running the command; 0 disables debouncing |
 | `--watcher-path` (optional) | empty string | Path to monitor for events |
 | `--log-level` (flags) | info | Minimum log level |
 | `--notifier-enabled` | true | Enable desktop notifications |
