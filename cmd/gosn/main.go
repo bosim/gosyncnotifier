@@ -36,6 +36,7 @@ func main() {
 	notifierBackend := flag.String("notifier-backend", string(internal.NotifierBackendDBus), `Notification backend: "dbus" or "command"`)
 	notifierExecutable := flag.String("notifier-exec", "notify-send", "Name or location of a notify-send compatible executable (command backend only)")
 	notifierPostCommand := flag.Bool("notifier-post-command", false, "Send a low priority desktop notification after the command has completed")
+	controlSocket := flag.String("control-socket", internal.DefaultSocketPath(), "Unix socket gosnctl uses to query and control this instance, empty disables the control socket")
 
 	flag.Usage = func() {
 		fmt.Printf("%s - run commands based on timer or file activity\n\n", programName)
@@ -145,6 +146,30 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Control socket for gosnctl: reports status (last sync, next timer, ...)
+	// and allows pausing, resuming and explicitly triggering syncs. Disabled
+	// when -control-socket is empty or another gosn instance owns the path.
+	var control *internal.ControlServer
+	if len(*controlSocket) > 0 {
+		controlConfig := internal.StatusConfig{
+			WatcherPath:      *watcherPath,
+			DebounceInterval: debounceInterval.String(),
+			Command:          cmd,
+		}
+		if timer != nil {
+			controlConfig.TimerInterval = fmt.Sprintf("%dm", *timerInterval)
+		}
+
+		control = internal.NewControlServer(*controlSocket, syncChannel, controlConfig, timer)
+		wg.Go(func() {
+			if err := control.Run(ctx); err != nil {
+				slog.Warn("Control socket disabled", "error", err)
+			}
+		})
+	} else {
+		slog.Info("control-socket disabled, gosnctl will not be able to control this instance")
+	}
+
 	syncChannel <- internal.SyncEvent{
 		Origin: internal.OriginInit,
 	}
@@ -164,9 +189,24 @@ eventLoop:
 				break eventLoop
 			}
 
+			// Track the event for gosnctl status, also while paused, so
+			// activity during a pause stays visible.
+			if control != nil {
+				control.RecordEvent(e)
+			}
+
 			/* Event was generated from file modification */
 			if e.Type != internal.SyncEventNone && timer != nil {
 				timer.Reset()
+			}
+
+			if control != nil && control.IsPaused() {
+				// Paused: timer schedule and event history stay up to date,
+				// only the command run itself is skipped.
+				slog.Debug("Paused, skipping command run",
+					"origin", e.Origin.String(),
+					"type", e.Type.String())
+				continue
 			}
 
 			if e.Type != internal.SyncEventNone {
@@ -193,14 +233,21 @@ eventLoop:
 					"origin", e.Origin.String())
 			}
 
-			if err := runner.Run(); err != nil {
+			if control != nil {
+				control.BeginRun(e.Origin)
+			}
+			runErr := runner.Run()
+			if control != nil {
+				control.EndRun(runErr == nil)
+			}
+			if runErr != nil {
 				if ctx.Err() != nil {
 					// Shutdown raced with the command; don't report a failure
 					// notification while exiting.
-					slog.Info("Command did not complete cleanly during shutdown", "error", err)
+					slog.Info("Command did not complete cleanly during shutdown", "error", runErr)
 				} else {
-					slog.Error("Error running command", "error", err)
-					if notifyErr := notifier.Critical(fmt.Sprintf("Error running command: %v", err)); notifyErr != nil {
+					slog.Error("Error running command", "error", runErr)
+					if notifyErr := notifier.Critical(fmt.Sprintf("Error running command: %v", runErr)); notifyErr != nil {
 						slog.Warn("Error sending notification", "error", notifyErr)
 					}
 				}

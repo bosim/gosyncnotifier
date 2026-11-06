@@ -13,6 +13,7 @@ The project is intended for workflows like:
 ## Repository Layout
 
 - `cmd/gosn/` — CLI entry point for the `gosn` binary
+- `cmd/gosnctl/` — CLI entry point for the `gosnctl` status and control binary (queries `gosn` over the control socket)
 - `internal/` — runtime logic for watchers, event debouncing, timers, runner execution, and notifications
 - `internal/*_test.go` — unit tests for the watcher, debouncer, timer, runner, syncevent, notifier, and util packages
 - `README.md` — usage, overview, and examples in Markdown format
@@ -32,7 +33,9 @@ go build ./...
 go test ./...
 ```
 
-CI (`.github/workflows/go.yml`) runs the same build and test commands on Go 1.26.
+CI (`.github/workflows/go.yml`) runs `go build -v ./...` and
+`go test -v -race ./...` on Go 1.26 (`-race` needs cgo, so a local C compiler
+is required to reproduce that exact command).
 
 ## Architecture Notes
 
@@ -64,6 +67,7 @@ CI (`.github/workflows/go.yml`) runs the same build and test commands on Go 1.26
    - `OriginInit`: Initialization signal (runs the command once at startup)
    - `OriginTimer`: Timer interval elapsed
    - `OriginWatcher`: Filesystem event observed
+   - `OriginControl`: Explicit run requested via `gosnctl trigger`
 
    A `SyncEvent` additionally carries `Events` (the affected files as
    `FileEvent{Filename, Type}`, deduplicated in first-appearance order with
@@ -86,7 +90,19 @@ CI (`.github/workflows/go.yml`) runs the same build and test commands on Go 1.26
    burst touching more than one file, the main loop logs the number of
    affected files as `files` and prints one debug line per file.
 
-8. **Shutdown**: A shared `context.Context` from `signal.NotifyContext` covers
+8. **Control Socket**: `gosn` serves a Unix domain socket (default
+   `$XDG_RUNTIME_DIR/gosn.sock`, i.e. `/run/user/<uid>/gosn.sock`, permissions
+   `0600`; `-control-socket` moves it, an empty value disables it) with
+   one-line JSON request/response pairs for `gosnctl`: `status`, `pause`
+   (optionally with a Go duration for auto-resume), `resume` and `trigger`.
+   While paused the event loop records events and keeps the timer schedule but
+   skips command runs; `resume` and the expiry of a timed pause queue a
+   catch-up event with `OriginInit`, while `trigger` is rejected until
+   resumed. A live instance's socket is never stolen (a second instance logs a
+   warning and disables its control server), a stale socket file is removed on
+   startup, and the file is unlinked on shutdown.
+
+9. **Shutdown**: A shared `context.Context` from `signal.NotifyContext` covers
    SIGINT (Ctrl-C) and SIGTERM. On cancellation the watcher, debouncer, and
    timer stop immediately, a pending debounced burst is dropped, an
    in-flight command is allowed to finish, and no further commands are
@@ -181,6 +197,18 @@ Send a secondary low-priority notification when command completes:
 gosn -notifier-post-command=true ...
 ```
 
+### Status and Pause (gosnctl)
+
+Query and control the running instance over the control socket:
+
+```bash
+gosnctl status            # sync state, last sync, next timer run
+gosnctl -json status      # same as JSON, for scripting
+gosnctl pause 30m         # pause with automatic resume after 30 minutes
+gosnctl resume            # resume and queue a catch-up run
+gosnctl trigger           # queue a sync run now (rejected while paused)
+```
+
 ### Notification Backend
 
 Use the session D-Bus notification service (default):
@@ -204,6 +232,7 @@ gosn -notifier-backend=command -notifier-exec=notify-send ...
 | `--timer-interval` (flags) | 10 minutes | Timer triggers; 0 disables timer |
 | `--debounce-interval` (flags) | 1s | Quiet period for coalescing file events before running the command; 0 disables debouncing |
 | `--watcher-path` (optional) | empty string | Path to monitor for events |
+| `--control-socket` (flags) | `$XDG_RUNTIME_DIR/gosn.sock` | Control socket for `gosnctl`; empty disables it, only one instance per socket |
 | `--log-level` (flags) | info | Minimum log level |
 | `--notifier-enabled` | true | Enable desktop notifications |
 | `--notifier-backend` | `dbus` | Notification backend: `dbus` or `command` |
@@ -218,12 +247,30 @@ gosn [flags] -- <command>
 
 Full options are printed with `gosn -help`.
 
+### gosnctl Commands
+
+```bash
+gosnctl [flags] <command> [arguments]
+```
+
+| Command | Description |
+|---------|-------------|
+| `status` (`-json` for JSON) | Sync state, last sync, last event, next timer run and configuration |
+| `pause [duration]` | Pause syncs until resume; optional Go duration (e.g. `30m`) auto-resumes after the period |
+| `resume` | Resume syncs and queue a catch-up run |
+| `trigger` | Queue a sync run now; rejected while paused |
+
+Flags: `-socket` selects a non-default control socket path (default matches
+`gosn`'s `-control-socket`), `-json` prints `status` as JSON. Full options are
+printed with `gosnctl -help`.
+
 ## Key Considerations
 
 - **Watch Scope**: Limit watched paths to avoid excessive syncs on slow environments
 - **Suspension Handling**: Use Go ticker (`time.NewTicker`) instead of sleep loops for responsive suspends
 - **Notifier Dependency**: The `dbus` backend requires a reachable session bus (`DBUS_SESSION_BUS_ADDRESS`); the `command` backend requires a `notify-send`-compatible executable in PATH
 - **Execution Performance**: Command execution runs regardless of file changes unless explicitly disabled
+- **Control Socket**: The default path is per-user under `$XDG_RUNTIME_DIR`; one `gosn` instance owns a socket at a time, and `gosnctl -socket` must match a custom `-control-socket` path
 
 ## Development Workflow
 
