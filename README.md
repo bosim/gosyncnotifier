@@ -211,6 +211,17 @@ on the same path it logs a warning and runs without a control socket, and a
 stale socket file left behind by a killed instance is removed automatically on
 the next start.
 
+Running multiple instances? Give each one its own socket and point `gosnctl`
+at the instance you want to talk to:
+
+```bash
+gosn -watcher-path ~/photos -control-socket /run/user/1000/gosn-photos.sock -- rsync -avz ~/photos server:photos
+gosn -watcher-path ~/docs   -control-socket /run/user/1000/gosn-docs.sock   -- rsync -avz ~/docs   server:docs
+
+gosnctl -socket /run/user/1000/gosn-photos.sock status   # talk to the photos instance
+gosnctl -socket /run/user/1000/gosn-docs.sock   pause    # pause only the docs instance
+```
+
 Commands:
 
 | Command | Description |

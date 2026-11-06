@@ -207,6 +207,7 @@ gosnctl -json status      # same as JSON, for scripting
 gosnctl pause 30m         # pause with automatic resume after 30 minutes
 gosnctl resume            # resume and queue a catch-up run
 gosnctl trigger           # queue a sync run now (rejected while paused)
+gosnctl -socket /run/user/1000/gosn-b.sock status   # non-default socket (multi-instance)
 ```
 
 ### Notification Backend
@@ -263,6 +264,14 @@ gosnctl [flags] <command> [arguments]
 Flags: `-socket` selects a non-default control socket path (default matches
 `gosn`'s `-control-socket`), `-json` prints `status` as JSON. Full options are
 printed with `gosnctl -help`.
+
+Multi-instance example — each `gosn` gets its own socket, `gosnctl -socket`
+selects which one to control:
+
+```bash
+gosn -watcher-path ~/photos -control-socket /run/user/1000/gosn-photos.sock -- rsync ...
+gosnctl -socket /run/user/1000/gosn-photos.sock status
+```
 
 ## Key Considerations
 
