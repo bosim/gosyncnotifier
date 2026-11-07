@@ -85,16 +85,19 @@ func (b *dbusBackend) send(eventType notifierEventType, message string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.session == nil {
-		session, err := b.dial()
-		if err != nil {
-			return err
+	tryNotify := func() error {
+		if b.session == nil {
+			session, err := b.dial()
+			if err != nil {
+				return err
+			}
+			b.session = session
 		}
-		b.session = session
+
+		return b.session.notify(eventType, message)
 	}
 
-	err := b.session.notify(eventType, message)
-	if err == nil {
+	if err := tryNotify(); err == nil {
 		return nil
 	}
 
@@ -103,13 +106,7 @@ func (b *dbusBackend) send(eventType notifierEventType, message string) error {
 	_ = b.session.close()
 	b.session = nil
 
-	session, dialErr := b.dial()
-	if dialErr != nil {
-		return err
-	}
-	b.session = session
-
-	err = b.session.notify(eventType, message)
+	err := tryNotify()
 	if err != nil {
 		_ = b.session.close()
 		b.session = nil
