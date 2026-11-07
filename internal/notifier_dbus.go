@@ -13,18 +13,18 @@ const (
 	notificationTimeout = 2 * time.Second
 )
 
-// dbusSession abstracts a live notification connection so the reconnect logic
-// can be tested without a running session bus.
-type dbusSession interface {
+// notificationSession abstracts a live notification connection so the
+// reconnect logic can be tested without a running session bus.
+type notificationSession interface {
 	notify(eventType notifierEventType, message string) error
 	close() error
 }
 
-type realDBusSession struct {
+type dbusSession struct {
 	conn *dbus.Conn
 }
 
-func (s *realDBusSession) notify(eventType notifierEventType, message string) error {
+func (s *dbusSession) notify(eventType notifierEventType, message string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), notificationTimeout)
 	defer cancel()
 
@@ -50,7 +50,7 @@ func (s *realDBusSession) notify(eventType notifierEventType, message string) er
 	return call.Store(&id)
 }
 
-func (s *realDBusSession) close() error {
+func (s *dbusSession) close() error {
 	return s.conn.Close()
 }
 
@@ -60,19 +60,19 @@ func notificationHints(eventType notifierEventType) map[string]dbus.Variant {
 	}
 }
 
-func newDBusSession() (dbusSession, error) {
+func newDBusSession() (notificationSession, error) {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		return nil, err
 	}
 
-	return &realDBusSession{conn: conn}, nil
+	return &dbusSession{conn: conn}, nil
 }
 
 type dbusBackend struct {
 	mu      sync.Mutex
-	session dbusSession
-	dial    func() (dbusSession, error)
+	session notificationSession
+	dial    func() (notificationSession, error)
 }
 
 func newDBusBackend() *dbusBackend {

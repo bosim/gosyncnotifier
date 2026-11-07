@@ -39,20 +39,20 @@ func TestNotificationHints(t *testing.T) {
 	}
 }
 
-type fakeDBusSession struct {
+type fakeNotificationSession struct {
 	notifyErr  error
 	eventTypes []notifierEventType
 	messages   []string
 	closed     bool
 }
 
-func (s *fakeDBusSession) notify(eventType notifierEventType, message string) error {
+func (s *fakeNotificationSession) notify(eventType notifierEventType, message string) error {
 	s.eventTypes = append(s.eventTypes, eventType)
 	s.messages = append(s.messages, message)
 	return s.notifyErr
 }
 
-func (s *fakeDBusSession) close() error {
+func (s *fakeNotificationSession) close() error {
 	s.closed = true
 	return nil
 }
@@ -60,10 +60,10 @@ func (s *fakeDBusSession) close() error {
 // TestDBusBackendReusesSession verifies that a healthy connection is kept
 // between notifications.
 func TestDBusBackendReusesSession(t *testing.T) {
-	session := &fakeDBusSession{}
+	session := &fakeNotificationSession{}
 	dialCalls := 0
 	backend := &dbusBackend{
-		dial: func() (dbusSession, error) {
+		dial: func() (notificationSession, error) {
 			dialCalls++
 			return session, nil
 		},
@@ -90,13 +90,13 @@ func TestDBusBackendReusesSession(t *testing.T) {
 // TestDBusBackendReconnectsOnError verifies that a failed send closes the
 // connection, dials again, and retries once.
 func TestDBusBackendReconnectsOnError(t *testing.T) {
-	first := &fakeDBusSession{notifyErr: errors.New("connection lost")}
-	second := &fakeDBusSession{}
-	sessions := []dbusSession{first, second}
+	first := &fakeNotificationSession{notifyErr: errors.New("connection lost")}
+	second := &fakeNotificationSession{}
+	sessions := []notificationSession{first, second}
 	dialCalls := 0
 
 	backend := &dbusBackend{
-		dial: func() (dbusSession, error) {
+		dial: func() (notificationSession, error) {
 			if dialCalls >= len(sessions) {
 				t.Fatalf("unexpected dial call %d", dialCalls+1)
 			}
@@ -129,13 +129,13 @@ func TestDBusBackendReconnectsOnError(t *testing.T) {
 func TestDBusBackendReturnsErrorAfterRetry(t *testing.T) {
 	firstErr := errors.New("first failure")
 	secondErr := errors.New("second failure")
-	first := &fakeDBusSession{notifyErr: firstErr}
-	second := &fakeDBusSession{notifyErr: secondErr}
-	sessions := []dbusSession{first, second}
+	first := &fakeNotificationSession{notifyErr: firstErr}
+	second := &fakeNotificationSession{notifyErr: secondErr}
+	sessions := []notificationSession{first, second}
 	dialCalls := 0
 
 	backend := &dbusBackend{
-		dial: func() (dbusSession, error) {
+		dial: func() (notificationSession, error) {
 			session := sessions[dialCalls]
 			dialCalls++
 			return session, nil
@@ -155,7 +155,7 @@ func TestDBusBackendReturnsErrorAfterRetry(t *testing.T) {
 func TestDBusBackendDialError(t *testing.T) {
 	wantErr := errors.New("no session bus")
 	backend := &dbusBackend{
-		dial: func() (dbusSession, error) {
+		dial: func() (notificationSession, error) {
 			return nil, wantErr
 		},
 	}
@@ -168,13 +168,13 @@ func TestDBusBackendDialError(t *testing.T) {
 // TestDBusBackendClose verifies the active connection is closed and a later
 // send creates a new one.
 func TestDBusBackendClose(t *testing.T) {
-	first := &fakeDBusSession{}
-	second := &fakeDBusSession{}
-	sessions := []dbusSession{first, second}
+	first := &fakeNotificationSession{}
+	second := &fakeNotificationSession{}
+	sessions := []notificationSession{first, second}
 	dialCalls := 0
 
 	backend := &dbusBackend{
-		dial: func() (dbusSession, error) {
+		dial: func() (notificationSession, error) {
 			session := sessions[dialCalls]
 			dialCalls++
 			return session, nil
