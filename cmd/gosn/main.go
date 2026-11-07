@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -36,6 +37,8 @@ func main() {
 	notifierBackend := flag.String("notifier-backend", string(internal.NotifierBackendDBus), `Notification backend: "dbus" or "command"`)
 	notifierExecutable := flag.String("notifier-exec", "notify-send", "Name or location of a notify-send compatible executable (command backend only)")
 	notifierPostCommand := flag.Bool("notifier-post-command", false, "Send a low priority desktop notification after the command has completed")
+	precmd := flag.String("precmd", "", "Shell command (sh -c) run before each command run; a non-zero exit skips the run")
+	postcmd := flag.String("postcmd", "", "Shell command (sh -c) run after each command run; a non-zero exit sends a critical notification with its output")
 	controlSocket := flag.String("control-socket", internal.DefaultSocketPath(), "Unix socket gosnctl uses to query and control this instance, empty disables the control socket")
 
 	flag.Usage = func() {
@@ -146,6 +149,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Optional pre- and post-commands, both executed through `sh -c` so they
+	// can use shell features. Resolved at startup so a broken configuration
+	// fails fast, like a missing main command.
+	var preRunner, postRunner *internal.Runner
+	if len(*precmd) > 0 {
+		preRunner, err = internal.NewShellRunner(*precmd)
+		if err != nil {
+			slog.Error("Error creating precmd runner", "error", err)
+			os.Exit(1)
+		}
+	}
+	if len(*postcmd) > 0 {
+		postRunner, err = internal.NewShellRunner(*postcmd)
+		if err != nil {
+			slog.Error("Error creating postcmd runner", "error", err)
+			os.Exit(1)
+		}
+	}
+
 	// Control socket for gosnctl: reports status (last sync, next timer, ...)
 	// and allows pausing, resuming and explicitly triggering syncs. Disabled
 	// when -control-socket is empty or another gosn instance owns the path.
@@ -233,25 +255,54 @@ eventLoop:
 					"origin", e.Origin.String())
 			}
 
-			if control != nil {
-				control.BeginRun(e.Origin)
+			// Run the optional precmd, the main command and the optional
+			// postcmd. BeginRun/EndRun bracket only the main command, and a
+			// precmd skip records neither, so gosnctl status keeps showing
+			// the previous real sync.
+			res := internal.RunSequence(preRunner, runner, postRunner, internal.RunHooks{
+				BeforeMain: func() {
+					if control != nil {
+						control.BeginRun(e.Origin)
+					}
+				},
+				AfterMain: func(mainErr error) {
+					if control != nil {
+						control.EndRun(mainErr == nil)
+					}
+				},
+			})
+			if res.Skipped {
+				// A failing precmd gates the run (e.g. metered connection):
+				// no desktop notification, the skip is only logged.
+				slog.Warn("precmd failed, skipping command run",
+					"error", res.PreErr,
+					"origin", e.Origin.String())
+				continue
 			}
-			runErr := runner.Run()
-			if control != nil {
-				control.EndRun(runErr == nil)
-			}
-			if runErr != nil {
+
+			if res.MainErr != nil {
 				if ctx.Err() != nil {
 					// Shutdown raced with the command; don't report a failure
 					// notification while exiting.
-					slog.Info("Command did not complete cleanly during shutdown", "error", runErr)
+					slog.Info("Command did not complete cleanly during shutdown", "error", res.MainErr)
 				} else {
-					slog.Error("Error running command", "error", runErr)
-					if notifyErr := notifier.Critical(fmt.Sprintf("Error running command: %v", runErr)); notifyErr != nil {
+					slog.Error("Error running command", "error", res.MainErr)
+					if notifyErr := notifier.Critical(fmt.Sprintf("Error running command: %v", res.MainErr)); notifyErr != nil {
 						slog.Warn("Error sending notification", "error", notifyErr)
 					}
 				}
-			} else if *notifierPostCommand && ctx.Err() == nil {
+			}
+
+			if res.PostErr != nil {
+				if ctx.Err() != nil {
+					slog.Info("postcmd did not complete cleanly during shutdown", "error", res.PostErr)
+				} else {
+					slog.Warn("Error running postcmd", "error", res.PostErr)
+					if notifyErr := notifier.Critical(postFailureMessage(res.PostErr, res.PostOutput)); notifyErr != nil {
+						slog.Warn("Error sending notification", "error", notifyErr)
+					}
+				}
+			} else if res.MainErr == nil && *notifierPostCommand && ctx.Err() == nil {
 				if notifyErr := notifier.Low("Command ran successfully"); notifyErr != nil {
 					slog.Warn("Error sending notification", "error", notifyErr)
 				}
@@ -261,4 +312,25 @@ eventLoop:
 
 	wg.Wait()
 	slog.Info("Shutdown complete")
+}
+
+// postOutputLimit caps the captured postcmd output included in a failure
+// notification, so a long conflict report does not flood the desktop.
+const postOutputLimit = 500
+
+// postFailureMessage renders the critical notification for a failed postcmd:
+// the error plus the captured output, truncated to postOutputLimit characters.
+func postFailureMessage(err error, output string) string {
+	msg := fmt.Sprintf("postcmd failed: %v", err)
+
+	out := strings.TrimSpace(output)
+	if out == "" {
+		return msg
+	}
+
+	if runes := []rune(out); len(runes) > postOutputLimit {
+		out = string(runes[:postOutputLimit]) + "..."
+	}
+
+	return msg + "\n" + out
 }

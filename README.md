@@ -25,6 +25,7 @@ This is useful for:
 - watches file system activity recursively (create, modify, delete)
 - coalesces bursts of file events and runs the command once after a quiet period (debouncing, default 1s)
 - triggers a configurable sync command, run as `<program> arg1 arg2 ...`
+- optional `-precmd` shell check that gates every run (e.g. skip syncing on a metered connection) and `-postcmd` shell hook that runs afterwards (e.g. report conflicts produced by `rclone bisync`)
 - supports time-based sync intervals, which reset whenever file activity is observed
 - works with common sync tools such as `rsync`, `rclone`, and similar executables
 - provides desktop notifications via D-Bus, with an optional `notify-send`-compatible command backend
@@ -90,6 +91,10 @@ The following flags are available:
     	Name or location of a notify-send compatible executable (command backend only) (default "notify-send")
   -notifier-post-command
     	Send a low priority desktop notification after the command has completed
+  -postcmd string
+    	Shell command (sh -c) run after each command run; a non-zero exit sends a critical notification with its output
+  -precmd string
+    	Shell command (sh -c) run before each command run; a non-zero exit skips the run
   -timer-interval int
     	Specifies the interval (in minutes) on how often the timer part should trigger, 0 is disabled (default 10)
   -watcher-path string
@@ -170,6 +175,57 @@ delayed by debouncing. If changes keep arriving without a quiet period (a
 long copy into the watched tree), the timer still triggers a run as a
 safety net.
 
+### Pre and post commands
+
+Two optional shell commands can wrap the main command. Both are executed
+with `sh -c`, inherit `gosn`'s environment and working directory, and are
+subject to the same serial execution as the main command:
+
+- `-precmd` runs before the main command on every run (startup, timer, file
+  activity, `gosnctl trigger`). A non-zero exit skips the run: neither the
+  main command nor the postcmd executes. The skip is only written to the
+  log — no desktop notification is sent, and `gosnctl status` does not
+  record it as a sync (`last sync` keeps the previous real run, while
+  `last event` still shows the trigger).
+- `-postcmd` runs after the main command whenever the main command ran,
+  even when it failed. Its output is still printed to `gosn`'s
+  stdout/stderr; when it exits non-zero, `gosn` logs a warning and sends a
+  critical notification containing the captured output (truncated to 500
+  characters).
+
+A common `-precmd` is gating the sync on an unmetered connection:
+
+```bash
+# Skip the run while NetworkManager reports a metered connection
+gosn -precmd 'test "$(nmcli -t -f METERED general get)" = no' \
+     -watcher-path ~/projects/source -- rsync -avz ~/projects/source server:src
+```
+
+`rclone bisync` keeps both copies of a conflicting file by renaming them
+with a `.conflict<N>` suffix (unless `--conflict-resolve` says otherwise).
+A `-postcmd` script that lists such files and exits non-zero turns them
+into a desktop notification:
+
+```bash
+gosn -watcher-path ~/photos \
+     -postcmd '/usr/local/bin/report-bisync-conflicts' \
+     -- rclone bisync ~/photos server:photos
+```
+
+```sh
+#!/bin/sh
+# report-bisync-conflicts: list bisync conflict files, exit 1 when any exist.
+conflicts=$(find ~/photos -name '*.conflict[0-9]*' -type f 2>/dev/null)
+if [ -n "$conflicts" ]; then
+    echo "rclone bisync conflicts:"
+    echo "$conflicts" | head -20
+    exit 1
+fi
+```
+
+The notification repeats on every run until the conflicts are resolved,
+because the `.conflict<N>` files remain in the tree.
+
 ### Logging
 
 ```bash
@@ -186,7 +242,8 @@ Desktop notifications are sent over the session D-Bus bus by default
 most Linux desktops).
 
 - a critical notification is sent when the command fails
-- a low priority notification is sent after a successful run when `-notifier-post-command` is set
+- a critical notification containing its output (truncated to 500 characters) is sent when `-postcmd` fails
+- a low priority notification is sent after a successful run when `-notifier-post-command` is set (both the main command and `-postcmd`, if any, must succeed)
 - `-notifier-enabled=false` disables notifications entirely
 - `-notifier-exec` points to a different executable
 

@@ -74,7 +74,7 @@ is required to reproduce that exact command).
    the latest type per file; nil when the event never passed through the
    debouncer).
 
-6. **Execution Model**: Events flow from `syncChannel` through runner, notifying notifier to send desktop messages (if enabled). The command runs once immediately at startup (`OriginInit`), file activity resets the timer interval, and commands run serially (one at a time, further events wait); watcher event bursts are debounced before reaching `syncChannel` (see Event Debouncing).
+6. **Execution Model**: Events flow from `syncChannel` through runner, notifying notifier to send desktop messages (if enabled). Each run optionally executes a `-precmd` shell command (`sh -c`) first — a non-zero exit skips the main command and the `-postcmd` without recording a sync in the control status — and a `-postcmd` shell command after the main command, which runs even when the main command failed; a failing `-postcmd` sends a critical notification with its captured output. The command runs once immediately at startup (`OriginInit`), file activity resets the timer interval, and commands run serially (one at a time, further events wait); watcher event bursts are debounced before reaching `syncChannel` (see Event Debouncing).
 
 7. **Event Debouncing**: A burst of filesystem events (an editor save, a copy
    into the watched tree) is coalesced by the `Debouncer`
@@ -197,6 +197,16 @@ Send a secondary low-priority notification when command completes:
 gosn -notifier-post-command=true ...
 ```
 
+### Pre and Post Commands
+
+Gate the run on a shell check (non-zero exit skips the run) and hook a
+reporting script after it (non-zero exit notifies with its output):
+
+```bash
+gosn -precmd 'test "$(nmcli -t -f METERED general get)" = no' \
+     -postcmd '/usr/local/bin/report-bisync-conflicts' -- rsync ...
+```
+
 ### Status and Pause (gosnctl)
 
 Query and control the running instance over the control socket:
@@ -239,6 +249,8 @@ gosn -notifier-backend=command -notifier-exec=notify-send ...
 | `--notifier-backend` | `dbus` | Notification backend: `dbus` or `command` |
 | `--notifier-exec` (default: notify-send) | `notify-send` | Executable name for the `command` backend (must be available) |
 | `--notifier-post-command` | false | Send follow-up notification |
+| `--precmd` (optional) | empty string | Shell command (`sh -c`) run before each command run; a non-zero exit skips the run |
+| `--postcmd` (optional) | empty string | Shell command (`sh -c`) run after each command run; a non-zero exit sends a critical notification with its output |
 
 ### CLI Syntax
 
