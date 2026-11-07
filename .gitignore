@@ -35,3 +35,5 @@ go.work.sum
 .dir-locals.el
 
 /gosn
+/gosnctl
+
