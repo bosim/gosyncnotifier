@@ -69,33 +69,32 @@ type notifierBackend interface {
 	close() error
 }
 
-func (n *notifier) run(eventType notifierEventType, message string) error {
-	return n.backend.send(eventType, message)
-}
-
 func (n *notifier) Low(message string) error {
-	return n.run(low, message)
+	return n.backend.send(low, message)
 }
 
 func (n *notifier) Normal(message string) error {
-	return n.run(normal, message)
+	return n.backend.send(normal, message)
 }
 
 func (n *notifier) Critical(message string) error {
-	return n.run(critical, message)
+	return n.backend.send(critical, message)
 }
 
 func (n *notifier) Close() error {
 	return n.backend.close()
 }
 
-type dummyNotifier struct {
+type dummyBackend struct {
 }
 
-func (n dummyNotifier) Low(message string) error      { return nil }
-func (n dummyNotifier) Normal(message string) error   { return nil }
-func (n dummyNotifier) Critical(message string) error { return nil }
-func (n dummyNotifier) Close() error                  { return nil }
+func (d dummyBackend) send(eventType notifierEventType, message string) error {
+	return nil
+}
+
+func (d dummyBackend) close() error {
+	return nil
+}
 
 type commandBackend struct {
 	program string
@@ -240,8 +239,12 @@ func (b *dbusBackend) close() error {
 }
 
 func NewNotifier(enabled bool, backend NotifierBackend, notifySendExec string) (Notifier, error) {
+	dummyNotifier := &notifier{
+		backend: &dummyBackend{},
+	}
+
 	if !enabled {
-		return &dummyNotifier{}, nil
+		return dummyNotifier, nil
 	}
 
 	switch backend {
@@ -261,7 +264,7 @@ func NewNotifier(enabled bool, backend NotifierBackend, notifySendExec string) (
 	case NotifierBackendCommand:
 		notifySendExec, err := exec.LookPath(notifySendExec)
 		if err != nil {
-			return &dummyNotifier{}, err
+			return dummyNotifier, err
 		}
 
 		return &notifier{
@@ -272,6 +275,6 @@ func NewNotifier(enabled bool, backend NotifierBackend, notifySendExec string) (
 		}, nil
 
 	default:
-		return &dummyNotifier{}, fmt.Errorf("unknown notifier backend %q", backend)
+		return dummyNotifier, fmt.Errorf("unknown notifier backend %q", backend)
 	}
 }
